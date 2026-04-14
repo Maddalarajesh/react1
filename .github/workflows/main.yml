@@ -7,7 +7,7 @@ on:
   push:
     branches:
       - sprint/*
-      - main
+      - develop
 
   workflow_dispatch:
     inputs:
@@ -15,7 +15,7 @@ on:
         description: "Select environment"
         required: true
         type: choice
-        options: [develop, qa, master]
+        options: [develop, beta, main]
 
       version:
         description: "Optional: Enter version (leave empty for latest)"
@@ -70,7 +70,6 @@ jobs:
             LAST_TAG="v1.0.0"
           fi
 
-          # Remove date suffix if exists
           BASE_VERSION=$(echo $LAST_TAG | cut -d'-' -f1)
           VERSION=${BASE_VERSION#v}
 
@@ -79,9 +78,6 @@ jobs:
           BRANCH="${{ github.ref_name }}"
           COMMIT_MSG=$(git log -1 --pretty=%B)
 
-          # =========================
-          # 🧠 Detect commit type
-          # =========================
           if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then
             TYPE="major"
           elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then
@@ -90,48 +86,27 @@ jobs:
             TYPE="patch"
           fi
 
-          echo "Detected TYPE=$TYPE"
-
           DATE=$(date +%Y-%m-%d)
 
-          # =========================
-          # 🧩 SPRINT VERSIONING
-          # =========================
           if [[ "$BRANCH" == sprint/* ]]; then
-
             if [[ "$TYPE" == "major" ]]; then
-              MAJOR=$((MAJOR+1))
-              MINOR=0
-              PATCH=0
+              MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
               NEW_TAG="v$MAJOR.$MINOR.$PATCH"
-
             elif [[ "$TYPE" == "minor" ]]; then
-              MINOR=$((MINOR+1))
-              PATCH=0
+              MINOR=$((MINOR+1)); PATCH=0
               NEW_TAG="v$MAJOR.$MINOR.$PATCH"
-
             else
               PATCH=$((PATCH+1))
-              NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"   # ✅ PATCH WITH DATE
+              NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
             fi
-
-          # =========================
-          # 🔥 FINAL VERSION (DEVELOP)
-          # =========================
           elif [[ "$BRANCH" == "develop" ]]; then
             PATCH=$((PATCH+1))
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"     # ✅ FINAL WITH DATE
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
           fi
 
-          # =========================
-          # ❌ SAFETY CHECK
-          # =========================
           if [[ -z "$NEW_TAG" ]]; then
-            echo "❌ NEW_TAG empty, skipping"
             exit 0
           fi
-
-          echo "Creating tag: $NEW_TAG"
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
@@ -143,7 +118,7 @@ jobs:
 
 
   # =========================
-  # 🚀 DEPLOY (SMART)
+  # 🚀 DEPLOY (SMART & BRANCH SYNC)
   # =========================
   deploy:
     runs-on: ubuntu-latest
@@ -154,13 +129,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve Version
+      - name: Resolve and Sync Code
         id: version
         run: |
           git fetch --tags --force
-
+          
+          # 1. Determine which version to use
           if [[ -z "${{ github.event.inputs.version }}" ]]; then
-            echo "⚡ No version provided → picking latest"
             VERSION=$(git tag --sort=-v:refname | head -n 1)
           else
             VERSION="${{ github.event.inputs.version }}"
@@ -172,26 +147,33 @@ jobs:
           fi
 
           echo "resolved=$VERSION" >> $GITHUB_OUTPUT
-          echo "Using version: $VERSION"
+          ENV="${{ github.event.inputs.environment }}"
 
-      - name: Deploy
+          # 2. UPDATE THE GITHUB BRANCH (The fix for your issue)
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          
+          echo "Updating branch $ENV to point to $VERSION"
+          git branch -f $ENV $VERSION
+          git push origin $ENV --force
+
+          # 3. Switch local files to that version for the Docker build
+          git checkout $VERSION
+
+      - name: Docker Build and Push
         run: |
           VERSION="${{ steps.version.outputs.resolved }}"
           ENV="${{ github.event.inputs.environment }}"
-
-          echo "🚀 Deploying $VERSION to $ENV"
 
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
           if [[ "$ENV" == "develop" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/aesthisia-demo"
-          elif [[ "$ENV" == "qa" ]]; then
+          elif [[ "$ENV" == "beta" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test"
-          elif [[ "$ENV" == "master" ]]; then
+          elif [[ "$ENV" == "main" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/prod-test"
           fi
-
-          docker pull $IMAGE:$VERSION || echo "Building image..."
 
           docker build -t $IMAGE:$VERSION .
           docker push $IMAGE:$VERSION
