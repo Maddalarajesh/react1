@@ -1,4 +1,4 @@
-name: CI-CD (Final Versioning + Safe Deploy)
+name: CI-CD (Manual Deploy Only)
 
 permissions:
   contents: write
@@ -67,12 +67,10 @@ jobs:
           TYPE="${{ github.event.inputs.release_type }}"
           DATE=$(date +%Y-%m-%d)
 
-          # Sprint → always patch
           if [[ "$BRANCH" == sprint/* ]]; then
             PATCH=$((PATCH+1))
             NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
 
-          # Develop → controlled bump
           elif [[ "$BRANCH" == "develop" ]]; then
             if [[ "$TYPE" == "major" ]]; then
               MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
@@ -95,40 +93,6 @@ jobs:
             git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
             git push origin "$NEW_TAG"
           fi
-
-
-  # =========================
-  # 🚀 AUTO DEPLOY TO BETA
-  # =========================
-  deploy-beta:
-    needs: versioning
-    runs-on: ubuntu-latest
-    if: github.ref_name == 'develop'
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Deploy to Beta
-        run: |
-          VERSION="${{ needs.versioning.outputs.created_tag }}"
-
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-
-          git fetch --tags --force
-
-          git branch -f beta $VERSION
-          git push origin beta --force
-
-          git checkout $VERSION
-
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-          IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test"
-
-          docker build -t $IMAGE:$VERSION .
-          docker push $IMAGE:$VERSION
 
 
   # =========================
@@ -168,12 +132,12 @@ jobs:
 
           git fetch --tags --force
 
-          # ✅ DEVELOP = TEST ONLY
+          # 🧪 DEVELOP = TEST ONLY
           if [[ "$ENV" == "develop" ]]; then
-            echo "Testing version (no branch update)"
+            echo "Testing only (no branch update)"
             git checkout $VERSION
 
-          # ✅ BETA / MAIN = REAL DEPLOY
+          # 🚀 BETA / MAIN = REAL DEPLOY
           else
             git branch -f $ENV $VERSION
             git push origin $ENV --force
