@@ -1,4 +1,4 @@
-name: CI-CD (Auto Beta + Manual Prod)
+name: CI-CD (Final Versioning + Safe Deploy)
 
 permissions:
   contents: write
@@ -21,6 +21,11 @@ on:
         description: "Optional: Enter version (leave empty for latest)"
         required: false
 
+      release_type:
+        description: "Release type (major | minor | patch)"
+        required: false
+        default: "patch"
+
 jobs:
 
   # =========================
@@ -37,15 +42,14 @@ jobs:
       )
 
     outputs:
-      created_tag: ${{ steps.tag.outputs.tag }}
+      created_tag: ${{ steps.calc.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Create Version Tag
-        id: tag
+      - id: calc
         run: |
           git fetch --tags --force
 
@@ -54,30 +58,21 @@ jobs:
             LAST_TAG="v1.0.0"
           fi
 
-          BASE_VERSION=$(echo $LAST_TAG | cut -d'-' -f1)
-          VERSION=${BASE_VERSION#v}
+          VERSION=${LAST_TAG#v}
+          BASE_VERSION=$(echo $VERSION | cut -d'-' -f1)
 
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
           BRANCH="${{ github.ref_name }}"
-          COMMIT_MSG=$(git log -1 --pretty=%B)
+          TYPE="${{ github.event.inputs.release_type }}"
           DATE=$(date +%Y-%m-%d)
 
-          # Detect type
-          if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then
-            TYPE="major"
-          elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then
-            TYPE="minor"
-          else
-            TYPE="patch"
-          fi
-
-          # Sprint → always patch with date
+          # Sprint → always patch
           if [[ "$BRANCH" == sprint/* ]]; then
             PATCH=$((PATCH+1))
             NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
 
-          # Develop → final version
+          # Develop → controlled bump
           elif [[ "$BRANCH" == "develop" ]]; then
             if [[ "$TYPE" == "major" ]]; then
               MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
@@ -91,7 +86,7 @@ jobs:
             fi
           fi
 
-          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
@@ -108,7 +103,6 @@ jobs:
   deploy-beta:
     needs: versioning
     runs-on: ubuntu-latest
-
     if: github.ref_name == 'develop'
 
     steps:
@@ -119,8 +113,6 @@ jobs:
       - name: Deploy to Beta
         run: |
           VERSION="${{ needs.versioning.outputs.created_tag }}"
-
-          echo "Auto deploying $VERSION to beta"
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
@@ -133,7 +125,6 @@ jobs:
           git checkout $VERSION
 
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-
           IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test"
 
           docker build -t $IMAGE:$VERSION .
@@ -141,9 +132,9 @@ jobs:
 
 
   # =========================
-  # 🚀 MANUAL DEPLOY TO PROD
+  # 🚀 MANUAL DEPLOY (SAFE)
   # =========================
-  deploy-prod:
+  deploy:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
 
@@ -165,23 +156,39 @@ jobs:
 
           echo "resolved=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Deploy to Main
+      - name: Deploy
         run: |
           VERSION="${{ steps.version.outputs.resolved }}"
+          ENV="${{ github.event.inputs.environment }}"
 
-          echo "Deploying $VERSION to main"
+          echo "Deploying $VERSION → $ENV"
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-          git branch -f main $VERSION
-          git push origin main --force
+          git fetch --tags --force
 
-          git checkout $VERSION
+          # ✅ DEVELOP = TEST ONLY
+          if [[ "$ENV" == "develop" ]]; then
+            echo "Testing version (no branch update)"
+            git checkout $VERSION
+
+          # ✅ BETA / MAIN = REAL DEPLOY
+          else
+            git branch -f $ENV $VERSION
+            git push origin $ENV --force
+            git checkout $VERSION
+          fi
 
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-          IMAGE="${{ secrets.DOCKER_USERNAME }}/prod-test"
+          if [[ "$ENV" == "develop" ]]; then
+            IMAGE="${{ secrets.DOCKER_USERNAME }}/aesthisia-demo"
+          elif [[ "$ENV" == "beta" ]]; then
+            IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test"
+          elif [[ "$ENV" == "main" ]]; then
+            IMAGE="${{ secrets.DOCKER_USERNAME }}/prod-test"
+          fi
 
           docker build -t $IMAGE:$VERSION .
           docker push $IMAGE:$VERSION
