@@ -1,4 +1,4 @@
-name: CI-CD (Final Versioning + Patch Date + Smart Deploy)
+name: CI-CD (Auto Beta + Manual Prod)
 
 permissions:
   contents: write
@@ -15,7 +15,7 @@ on:
         description: "Select environment"
         required: true
         type: choice
-        options: [develop, beta, main]
+        options: [main]
 
       version:
         description: "Optional: Enter version (leave empty for latest)"
@@ -24,29 +24,10 @@ on:
 jobs:
 
   # =========================
-  # 🧠 SETUP
-  # =========================
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      branch: ${{ steps.detect.outputs.branch }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: detect
-        run: |
-          echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-
-
-  # =========================
-  # 🚀 VERSIONING (ONLY ON PUSH)
+  # 🚀 VERSIONING
   # =========================
   versioning:
-    needs: setup
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     if: |
       github.event_name == 'push' &&
@@ -55,17 +36,20 @@ jobs:
         github.ref_name == 'develop'
       )
 
+    outputs:
+      created_tag: ${{ steps.tag.outputs.tag }}
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Calculate Version
+      - name: Create Version Tag
+        id: tag
         run: |
           git fetch --tags --force
 
           LAST_TAG=$(git tag --sort=-v:refname | head -n 1)
-
           if [ -z "$LAST_TAG" ]; then
             LAST_TAG="v1.0.0"
           fi
@@ -77,7 +61,9 @@ jobs:
 
           BRANCH="${{ github.ref_name }}"
           COMMIT_MSG=$(git log -1 --pretty=%B)
+          DATE=$(date +%Y-%m-%d)
 
+          # Detect type
           if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then
             TYPE="major"
           elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then
@@ -86,9 +72,13 @@ jobs:
             TYPE="patch"
           fi
 
-          DATE=$(date +%Y-%m-%d)
-
+          # Sprint → always patch with date
           if [[ "$BRANCH" == sprint/* ]]; then
+            PATCH=$((PATCH+1))
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
+
+          # Develop → final version
+          elif [[ "$BRANCH" == "develop" ]]; then
             if [[ "$TYPE" == "major" ]]; then
               MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
               NEW_TAG="v$MAJOR.$MINOR.$PATCH"
@@ -99,14 +89,9 @@ jobs:
               PATCH=$((PATCH+1))
               NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
             fi
-          elif [[ "$BRANCH" == "develop" ]]; then
-            PATCH=$((PATCH+1))
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
           fi
 
-          if [[ -z "$NEW_TAG" ]]; then
-            exit 0
-          fi
+          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
@@ -118,9 +103,47 @@ jobs:
 
 
   # =========================
-  # 🚀 DEPLOY (SMART & BRANCH SYNC)
+  # 🚀 AUTO DEPLOY TO BETA
   # =========================
-  deploy:
+  deploy-beta:
+    needs: versioning
+    runs-on: ubuntu-latest
+
+    if: github.ref_name == 'develop'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Deploy to Beta
+        run: |
+          VERSION="${{ needs.versioning.outputs.created_tag }}"
+
+          echo "Auto deploying $VERSION to beta"
+
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          git fetch --tags --force
+
+          git branch -f beta $VERSION
+          git push origin beta --force
+
+          git checkout $VERSION
+
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+          IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test"
+
+          docker build -t $IMAGE:$VERSION .
+          docker push $IMAGE:$VERSION
+
+
+  # =========================
+  # 🚀 MANUAL DEPLOY TO PROD
+  # =========================
+  deploy-prod:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
 
@@ -129,51 +152,36 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve and Sync Code
+      - name: Resolve Version
         id: version
         run: |
           git fetch --tags --force
-          
-          # 1. Determine which version to use
+
           if [[ -z "${{ github.event.inputs.version }}" ]]; then
             VERSION=$(git tag --sort=-v:refname | head -n 1)
           else
             VERSION="${{ github.event.inputs.version }}"
           fi
 
-          if [[ -z "$VERSION" ]]; then
-            echo "❌ No version found"
-            exit 1
-          fi
-
           echo "resolved=$VERSION" >> $GITHUB_OUTPUT
-          ENV="${{ github.event.inputs.environment }}"
 
-          # 2. UPDATE THE GITHUB BRANCH (The fix for your issue)
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          
-          echo "Updating branch $ENV to point to $VERSION"
-          git branch -f $ENV $VERSION
-          git push origin $ENV --force
-
-          # 3. Switch local files to that version for the Docker build
-          git checkout $VERSION
-
-      - name: Docker Build and Push
+      - name: Deploy to Main
         run: |
           VERSION="${{ steps.version.outputs.resolved }}"
-          ENV="${{ github.event.inputs.environment }}"
+
+          echo "Deploying $VERSION to main"
+
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          git branch -f main $VERSION
+          git push origin main --force
+
+          git checkout $VERSION
 
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-          if [[ "$ENV" == "develop" ]]; then
-            IMAGE="${{ secrets.DOCKER_USERNAME }}/aesthisia-demo"
-          elif [[ "$ENV" == "beta" ]]; then
-            IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test"
-          elif [[ "$ENV" == "main" ]]; then
-            IMAGE="${{ secrets.DOCKER_USERNAME }}/prod-test"
-          fi
+          IMAGE="${{ secrets.DOCKER_USERNAME }}/prod-test"
 
           docker build -t $IMAGE:$VERSION .
           docker push $IMAGE:$VERSION
