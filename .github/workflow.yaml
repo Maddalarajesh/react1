@@ -1,0 +1,197 @@
+name: CI-CD (Final Versioning + Patch Date + Smart Deploy)
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - sprint/*
+      - main
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select environment"
+        required: true
+        type: choice
+        options: [develop, qa, master]
+
+      version:
+        description: "Optional: Enter version (leave empty for latest)"
+        required: false
+
+jobs:
+
+  # =========================
+  # 🧠 SETUP
+  # =========================
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.detect.outputs.branch }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: detect
+        run: |
+          echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+
+
+  # =========================
+  # 🚀 VERSIONING (ONLY ON PUSH)
+  # =========================
+  versioning:
+    needs: setup
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    if: |
+      github.event_name == 'push' &&
+      (
+        startsWith(github.ref_name, 'sprint/') ||
+        github.ref_name == 'develop'
+      )
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate Version
+        run: |
+          git fetch --tags --force
+
+          LAST_TAG=$(git tag --sort=-v:refname | head -n 1)
+
+          if [ -z "$LAST_TAG" ]; then
+            LAST_TAG="v1.0.0"
+          fi
+
+          # Remove date suffix if exists
+          BASE_VERSION=$(echo $LAST_TAG | cut -d'-' -f1)
+          VERSION=${BASE_VERSION#v}
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          BRANCH="${{ github.ref_name }}"
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+
+          # =========================
+          # 🧠 Detect commit type
+          # =========================
+          if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then
+            TYPE="major"
+          elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then
+            TYPE="minor"
+          else
+            TYPE="patch"
+          fi
+
+          echo "Detected TYPE=$TYPE"
+
+          DATE=$(date +%Y-%m-%d)
+
+          # =========================
+          # 🧩 SPRINT VERSIONING
+          # =========================
+          if [[ "$BRANCH" == sprint/* ]]; then
+
+            if [[ "$TYPE" == "major" ]]; then
+              MAJOR=$((MAJOR+1))
+              MINOR=0
+              PATCH=0
+              NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+
+            elif [[ "$TYPE" == "minor" ]]; then
+              MINOR=$((MINOR+1))
+              PATCH=0
+              NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+
+            else
+              PATCH=$((PATCH+1))
+              NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"   # ✅ PATCH WITH DATE
+            fi
+
+          # =========================
+          # 🔥 FINAL VERSION (DEVELOP)
+          # =========================
+          elif [[ "$BRANCH" == "develop" ]]; then
+            PATCH=$((PATCH+1))
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"     # ✅ FINAL WITH DATE
+          fi
+
+          # =========================
+          # ❌ SAFETY CHECK
+          # =========================
+          if [[ -z "$NEW_TAG" ]]; then
+            echo "❌ NEW_TAG empty, skipping"
+            exit 0
+          fi
+
+          echo "Creating tag: $NEW_TAG"
+
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          if ! git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+            git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
+            git push origin "$NEW_TAG"
+          fi
+
+
+  # =========================
+  # 🚀 DEPLOY (SMART)
+  # =========================
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve Version
+        id: version
+        run: |
+          git fetch --tags --force
+
+          if [[ -z "${{ github.event.inputs.version }}" ]]; then
+            echo "⚡ No version provided → picking latest"
+            VERSION=$(git tag --sort=-v:refname | head -n 1)
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+
+          if [[ -z "$VERSION" ]]; then
+            echo "❌ No version found"
+            exit 1
+          fi
+
+          echo "resolved=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using version: $VERSION"
+
+      - name: Deploy
+        run: |
+          VERSION="${{ steps.version.outputs.resolved }}"
+          ENV="${{ github.event.inputs.environment }}"
+
+          echo "🚀 Deploying $VERSION to $ENV"
+
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+          if [[ "$ENV" == "develop" ]]; then
+            IMAGE="${{ secrets.DOCKER_USERNAME }}/aesthisia-demo"
+          elif [[ "$ENV" == "qa" ]]; then
+            IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test"
+          elif [[ "$ENV" == "master" ]]; then
+            IMAGE="${{ secrets.DOCKER_USERNAME }}/prod-test"
+          fi
+
+          docker pull $IMAGE:$VERSION || echo "Building image..."
+
+          docker build -t $IMAGE:$VERSION .
+          docker push $IMAGE:$VERSION
