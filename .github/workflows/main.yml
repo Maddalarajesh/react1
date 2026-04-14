@@ -15,7 +15,7 @@ on:
         description: "Select environment"
         required: true
         type: choice
-        options: [main]
+        options: [develop, beta, main]
 
       version:
         description: "Optional: Enter version (leave empty for latest)"
