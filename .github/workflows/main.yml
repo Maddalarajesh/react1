@@ -50,11 +50,26 @@ jobs:
 
           DATE=$(date +%Y-%m-%d)
 
-          # 🔥 Get latest tag for TODAY first
-          LAST_TAG=$(git tag --list "v*-$DATE" --sort=-v:refname | head -n 1)
+          echo "🔍 Finding latest tag for today: $DATE"
 
-          # Fallback to latest overall if none today
-          if [ -z "$LAST_TAG" ]; then
+          # =========================
+          # ✅ GET TODAY TAGS (ROBUST SORT)
+          # =========================
+          TODAY_TAGS=$(git tag --list "v*-$DATE")
+
+          if [ -n "$TODAY_TAGS" ]; then
+            echo "Tags found for today:"
+            echo "$TODAY_TAGS"
+
+            LAST_TAG=$(echo "$TODAY_TAGS" \
+              | sed "s/-$DATE//" \
+              | sed 's/^v//' \
+              | sort -t. -k1,1n -k2,2n -k3,3n \
+              | tail -n 1)
+
+            LAST_TAG="v$LAST_TAG-$DATE"
+          else
+            echo "No tags today, fallback to latest overall"
             LAST_TAG=$(git tag --sort=-v:refname | head -n 1)
           fi
 
@@ -63,14 +78,16 @@ jobs:
             LAST_TAG="v1.0.000-$DATE"
           fi
 
-          echo "Last tag: $LAST_TAG"
+          echo "✅ Last tag used: $LAST_TAG"
 
           VERSION=${LAST_TAG#v}
           BASE_VERSION=$(echo $VERSION | cut -d'-' -f1)
 
           IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
-          # 🔥 Commit message (lowercase)
+          # =========================
+          # 🔥 Commit message detection
+          # =========================
           COMMIT_MSG=$(git log -1 --pretty=%s | tr '[:upper:]' '[:lower:]')
           echo "Commit message: $COMMIT_MSG"
 
@@ -90,23 +107,26 @@ jobs:
             PATCH=$((PATCH+1))
           fi
 
-          # ✅ Always pad PATCH to 3 digits
+          # =========================
+          # ✅ FORMAT VERSION
+          # =========================
           PATCH_PADDED=$(printf "%03d" $PATCH)
-
           NEW_TAG="v$MAJOR.$MINOR.$PATCH_PADDED-$DATE"
 
-          echo "New tag: $NEW_TAG"
+          echo "🚀 New tag: $NEW_TAG"
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-          # 🛑 Prevent duplicate push
+          # =========================
+          # 🛑 PREVENT DUPLICATES
+          # =========================
           if ! git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
             git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
             git push origin "$NEW_TAG"
           else
-            echo "Tag already exists, skipping push"
+            echo "⚠️ Tag already exists, skipping push"
           fi
 
 
