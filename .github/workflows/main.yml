@@ -6,7 +6,7 @@ permissions:
 on:
   push:
     branches:
-      - epic/*
+      - feature/*
       - develop
 
   workflow_dispatch:
