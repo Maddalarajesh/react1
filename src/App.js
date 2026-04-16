@@ -8,6 +8,7 @@ function App() {
         <img src={logo} className="App-logo" alt="logo" />
         <p>
           Welcome to react javascript, You are almost there for testing!
+          reflect changes from epic branch
         </p>
         <a
           className="App-link"
