@@ -8,7 +8,7 @@ function App() {
         <img src={logo} className="App-logo" alt="logo" />
         <p>
           Welcome to react javascript, You are almost there for testing locally in render!
-          changing the versions to patch dell versioning
+          changing the versions to patch dell versioning latest
         </p>
         <a
           className="App-link"
