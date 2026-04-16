@@ -29,7 +29,7 @@ jobs:
     if: |
       github.event_name == 'push' &&
       (
-        startsWith(github.ref_name, 'epic/') ||
+        startsWith(github.ref_name, 'feature/') ||
         github.ref_name == 'develop'
       )
 

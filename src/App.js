@@ -8,6 +8,7 @@ function App() {
         <img src={logo} className="App-logo" alt="logo" />
         <p>
           Welcome to react javascript, You are almost there for testing!
+          Adding the versioning changes to updated branches of react javascript
         </p>
         <a
           className="App-link"
