@@ -7,7 +7,7 @@ function App() {
       <header className="App-header">
         <img src={logo} className="App-logo" alt="logo" />
         <p>
-          Welcome to react javascript, You are almost there for testing!
+          Welcome to react javascript, You are almost there for testing locally in render!
         </p>
         <a
           className="App-link"
