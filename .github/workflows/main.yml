@@ -6,7 +6,7 @@ permissions:
 on:
   push:
     branches:
-      - sprint/*
+      - epic/*
       - develop
 
   workflow_dispatch:
@@ -32,7 +32,7 @@ jobs:
     if: |
       github.event_name == 'push' &&
       (
-        startsWith(github.ref_name, 'sprint/') ||
+        startsWith(github.ref_name, 'epic/') ||
         github.ref_name == 'develop'
       )
 
