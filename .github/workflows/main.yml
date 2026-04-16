@@ -62,7 +62,6 @@ jobs:
 
           # 🔥 Get commit message
           COMMIT_MSG=$(git log -1 --pretty=%s | tr '[:upper:]' '[:lower:]')
-
           echo "Commit message: $COMMIT_MSG"
 
           # =========================
@@ -71,23 +70,25 @@ jobs:
           if [[ "$COMMIT_MSG" == enhancement* ]]; then
             echo "🚀 Major release detected"
             MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH"
 
           elif [[ "$COMMIT_MSG" == feature* ]]; then
             echo "✨ Minor release detected"
             MINOR=$((MINOR+1)); PATCH=0
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH"
 
           elif [[ "$COMMIT_MSG" == hotfix* || "$COMMIT_MSG" == bugfix* ]]; then
             echo "🐛 Patch release detected"
             PATCH=$((PATCH+1))
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
 
           else
             echo "⚠️ Default patch (fallback)"
             PATCH=$((PATCH+1))
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
           fi
+
+          # ✅ Format PATCH to 3 digits
+          PATCH_PADDED=$(printf "%03d" $PATCH)
+
+          # ✅ Always include date
+          NEW_TAG="v$MAJOR.$MINOR.$PATCH_PADDED-$DATE"
 
           echo "New tag: $NEW_TAG"
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
