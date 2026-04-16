@@ -1,4 +1,4 @@
-name: CI-CD (Manual Deploy Only)
+name: CI-CD (Manual Deploy + Auto Versioning)
 
 permissions:
   contents: write
@@ -21,15 +21,10 @@ on:
         description: "Optional: Enter version (leave empty for latest)"
         required: false
 
-      release_type:
-        description: "Release type (major | minor | patch)"
-        required: false
-        default: "patch"
-
 jobs:
 
   # =========================
-  # 🚀 VERSIONING
+  # 🚀 VERSIONING (AUTO)
   # =========================
   versioning:
     runs-on: ubuntu-latest
@@ -63,35 +58,49 @@ jobs:
 
           IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
-          BRANCH="${{ github.ref_name }}"
-          TYPE="${{ github.event.inputs.release_type }}"
           DATE=$(date +%Y-%m-%d)
 
-          if [[ "$BRANCH" == sprint/* ]]; then
+          # 🔥 Get commit message
+          COMMIT_MSG=$(git log -1 --pretty=%s | tr '[:upper:]' '[:lower:]')
+
+          echo "Commit message: $COMMIT_MSG"
+
+          # =========================
+          # 🎯 VERSION RULES
+          # =========================
+          if [[ "$COMMIT_MSG" == enhancement* ]]; then
+            echo "🚀 Major release detected"
+            MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+
+          elif [[ "$COMMIT_MSG" == feature* ]]; then
+            echo "✨ Minor release detected"
+            MINOR=$((MINOR+1)); PATCH=0
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+
+          elif [[ "$COMMIT_MSG" == hotfix* || "$COMMIT_MSG" == bugfix* ]]; then
+            echo "🐛 Patch release detected"
             PATCH=$((PATCH+1))
             NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
 
-          elif [[ "$BRANCH" == "develop" ]]; then
-            if [[ "$TYPE" == "major" ]]; then
-              MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
-              NEW_TAG="v$MAJOR.$MINOR.$PATCH"
-            elif [[ "$TYPE" == "minor" ]]; then
-              MINOR=$((MINOR+1)); PATCH=0
-              NEW_TAG="v$MAJOR.$MINOR.$PATCH"
-            else
-              PATCH=$((PATCH+1))
-              NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
-            fi
+          else
+            echo "⚠️ Default patch (fallback)"
+            PATCH=$((PATCH+1))
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
           fi
 
+          echo "New tag: $NEW_TAG"
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
+          # 🛑 Prevent duplicate tag push
           if ! git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
             git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
             git push origin "$NEW_TAG"
+          else
+            echo "Tag already exists, skipping push"
           fi
 
 
