@@ -137,7 +137,7 @@ jobs:
           
       - name: Trigger Health Check in 5 Minutes
         run: |
-          echo "Waiting 5 minutes for services to stabilize..."
+          echo "Waiting 5 minutes for services to stabilize.."
           sleep 300 
           gh workflow run health-check.yml
         env:
