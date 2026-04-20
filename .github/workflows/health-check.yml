@@ -1,0 +1,15 @@
+name: Post-Deployment Health Check
+on:
+  workflow_dispatch: # Allows manual or API-based triggers
+
+jobs:
+  check-health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Backend and DB Status
+        uses: jtalk/url-health-check-action@v3
+        with:
+          # Your health check endpoint that checks both Backend and DB
+          url: https://api.deepcarve.online
+          max-attempts: 5
+          retry-delay: 10s
