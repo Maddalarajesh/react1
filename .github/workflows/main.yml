@@ -175,3 +175,13 @@ jobs:
 
           docker build -t $IMAGE:$VERSION .
           docker push $IMAGE:$VERSION
+          
+      - name: Trigger Health Check in 5 Minutes
+        run: |
+          echo "Waiting 5 minutes for services to stabilize..."
+           # 5 minutes = 300 seconds
+          sleep 300 
+          gh workflow run health-check.yml
+       env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  
