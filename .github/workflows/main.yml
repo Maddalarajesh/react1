@@ -120,6 +120,6 @@ jobs:
         run: |
           aws lambda invoke \
             --function-name Deepcarve_Backendwebsite_healthchecks \
-            --invocation-type Event \
+            --invocation-type RequestResponse \
             response.json
           cat response.json 
