@@ -107,7 +107,7 @@ jobs:
     if: github.event.inputs.environment == 'main'
     steps:
       - name: Wait for 20 minutes
-        run: sleep 1200
+        run: sleep 360
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
