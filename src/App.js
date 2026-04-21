@@ -8,7 +8,7 @@ function App() {
         <img src={logo} className="App-logo" alt="logo" />
         <p>
           Welcome to react javascript, You are almost there for testing the lambda code!
-          Adding the versioning changes to updated branches of react javascript
+          Adding the versioning changes to updated branches of react javascript testing pr's
         </p>
         <a
           className="App-link"
