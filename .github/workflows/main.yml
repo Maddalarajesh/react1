@@ -122,3 +122,4 @@ jobs:
             --function-name Deepcarve_Backendwebsite_healthchecks \
             --invocation-type Event \
             response.json
+          cat response.json 
