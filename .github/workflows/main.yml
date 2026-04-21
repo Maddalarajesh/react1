@@ -107,13 +107,13 @@ jobs:
     if: github.event.inputs.environment == 'main'
     steps:
       - name: Wait for 20 minutes
-        run: sleep 1200
+        run: sleep 120
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_LAMBDA }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_LAMBDA }}
           aws-region: us-east-2
 
       - name: Trigger Health Check Lambda
