@@ -67,9 +67,11 @@ jobs:
           "HOST=$safe.127.0.0.1.nip.io" >> $env:GITHUB_ENV
           "IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$safe-${{ github.run_number }}" >> $env:GITHUB_ENV
 
+      # ✅ FIXED DOCKER LOGIN (NO WSL PIPE ISSUE)
       - name: Docker Login
-        shell: bash
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+        shell: powershell
+        run: |
+          docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
 
       - name: Build & Push Image
         shell: powershell
@@ -140,9 +142,11 @@ jobs:
 
           "resolved=$version" >> $env:GITHUB_OUTPUT
 
+      # ✅ FIXED DOCKER LOGIN
       - name: Docker Login
-        shell: bash
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+        shell: powershell
+        run: |
+          docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
 
       - name: Build & Push
         shell: powershell
