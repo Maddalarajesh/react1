@@ -32,6 +32,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Fix PowerShell Execution Policy
+        shell: powershell
+        run: Set-ExecutionPolicy Bypass -Scope Process -Force
+
       - name: Create Tag
         shell: powershell
         run: |
@@ -49,6 +53,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Fix PowerShell Execution Policy
+        shell: powershell
+        run: Set-ExecutionPolicy Bypass -Scope Process -Force
+
       - name: Set variables
         shell: powershell
         run: |
@@ -60,15 +68,18 @@ jobs:
           "IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$safe-${{ github.run_number }}" >> $env:GITHUB_ENV
 
       - name: Docker Login
+        shell: bash
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
       - name: Build & Push Image
+        shell: powershell
         run: |
           docker build -t $env:IMAGE .
           docker push $env:IMAGE
 
       - name: Create Namespace
-        run: kubectl create namespace $env:NAMESPACE || exit 0
+        shell: powershell
+        run: kubectl create namespace $env:NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy
         shell: powershell
@@ -79,6 +90,7 @@ jobs:
             kubectl apply -n $env:NAMESPACE -f -
 
       - name: Show URL
+        shell: powershell
         run: echo "http://$env:HOST"
 
 
@@ -87,6 +99,10 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
 
     steps:
+      - name: Fix PowerShell Execution Policy
+        shell: powershell
+        run: Set-ExecutionPolicy Bypass -Scope Process -Force
+
       - name: Delete Namespace
         shell: powershell
         run: |
@@ -106,6 +122,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Fix PowerShell Execution Policy
+        shell: powershell
+        run: Set-ExecutionPolicy Bypass -Scope Process -Force
+
       - name: Resolve Version
         id: version
         shell: powershell
@@ -121,6 +141,7 @@ jobs:
           "resolved=$version" >> $env:GITHUB_OUTPUT
 
       - name: Docker Login
+        shell: bash
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
       - name: Build & Push
@@ -140,7 +161,7 @@ jobs:
           docker build -t $image .
           docker push $image
 
-          kubectl create namespace $envName || exit 0
+          kubectl create namespace $envName --dry-run=client -o yaml | kubectl apply -f -
 
           (Get-Content deployment.yml) `
             -replace 'IMAGE_PLACEHOLDER', "$image" `
@@ -170,4 +191,5 @@ jobs:
             --function-name Deepcarve_Backendwebsite_healthchecks \
             --invocation-type RequestResponse \
             response.json
+
           cat response.json
