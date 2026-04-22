@@ -25,6 +25,9 @@ on:
 
 jobs:
 
+# =========================
+# 🔖 VERSIONING (Feature tags)
+# =========================
   versioning:
     runs-on: [self-hosted, Windows, X64]
     if: github.event_name == 'push' && startsWith(github.ref_name, 'feature/')
@@ -46,6 +49,9 @@ jobs:
           git push origin $tag
 
 
+# =========================
+# 🚀 PREVIEW DEPLOY (PR)
+# =========================
   preview-deploy:
     runs-on: [self-hosted, Windows, X64]
     if: github.event_name == 'pull_request' && github.event.action != 'closed'
@@ -57,17 +63,25 @@ jobs:
         shell: powershell
         run: Set-ExecutionPolicy Bypass -Scope Process -Force
 
-      - name: Set variables
+      # =========================
+      # 🔥 SINGLE SOURCE OF TRUTH (IMPORTANT FIX)
+      # =========================
+      - name: Set variables (FIXED CONSISTENCY)
         shell: powershell
         run: |
           $branch = "${{ github.event.pull_request.head.ref }}"
-          $safe = $branch -replace '[^a-zA-Z0-9]', '-'
+          
+          # SAFE NAME (USED EVERYWHERE)
+          $name = $branch.ToLower() -replace '[^a-z0-9]', '-'
 
-          "NAMESPACE=$safe" >> $env:GITHUB_ENV
-          "HOST=$safe.127.0.0.1.nip.io" >> $env:GITHUB_ENV
-          "IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$safe-${{ github.run_number }}" >> $env:GITHUB_ENV
+          $namespace = $name
+          $host = "$name.127.0.0.1.nip.io"
+          $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$name-${{ github.run_number }}"
 
-      # ✅ FIXED DOCKER LOGIN (NO WSL PIPE ISSUE)
+          "NAMESPACE=$namespace" >> $env:GITHUB_ENV
+          "HOST=$host" >> $env:GITHUB_ENV
+          "IMAGE=$image" >> $env:GITHUB_ENV
+
       - name: Docker Login
         shell: powershell
         run: |
@@ -81,9 +95,13 @@ jobs:
 
       - name: Create Namespace
         shell: powershell
-        run: kubectl create namespace $env:NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+        run: |
+          kubectl create namespace $env:NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Deploy
+      # =========================
+      # 🚀 DEPLOY (FIXED HOST + NAMESPACE MATCH)
+      # =========================
+      - name: Deploy Application
         shell: powershell
         run: |
           (Get-Content deployment.yml) `
@@ -92,11 +110,17 @@ jobs:
             -replace 'HOST_PLACEHOLDER', "$env:HOST" |
             kubectl apply -n $env:NAMESPACE -f -
 
-      - name: Show URL
+      - name: Show Preview URL
         shell: powershell
-        run: echo "http://$env:HOST"
+        run: |
+          echo "===================================="
+          echo "🚀 Preview URL: http://$env:HOST"
+          echo "===================================="
 
 
+# =========================
+# 🧹 CLEANUP (PR CLOSED)
+# =========================
   cleanup:
     runs-on: [self-hosted, Windows, X64]
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
@@ -110,10 +134,14 @@ jobs:
         shell: powershell
         run: |
           $branch = "${{ github.event.pull_request.head.ref }}"
-          $safe = $branch -replace '[^a-zA-Z0-9]', '-'
-          kubectl delete namespace $safe --ignore-not-found=true
+          $name = $branch.ToLower() -replace '[^a-z0-9]', '-'
+
+          kubectl delete namespace $name --ignore-not-found=true
 
 
+# =========================
+# 🌍 ENV DEPLOY (MANUAL)
+# =========================
   deploy:
     runs-on: [self-hosted, Windows, X64]
     if: github.event_name == 'workflow_dispatch'
@@ -143,7 +171,6 @@ jobs:
 
           "resolved=$version" >> $env:GITHUB_OUTPUT
 
-      # ✅ FIXED DOCKER LOGIN
       - name: Docker Login
         shell: powershell
         run: |
@@ -168,10 +195,13 @@ jobs:
 
           kubectl create namespace $envName --dry-run=client -o yaml | kubectl apply -f -
 
+          $host = "$envName.127.0.0.1.nip.io"
+
           (Get-Content deployment.yml) `
             -replace 'IMAGE_PLACEHOLDER', "$image" `
-            -replace 'HOST_PLACEHOLDER', "$envName.127.0.0.1.nip.io" |
+            -replace 'HOST_PLACEHOLDER', "$host" |
             kubectl apply -n $envName -f -
+
 
 
   health-check:
