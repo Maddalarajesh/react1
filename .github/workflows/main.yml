@@ -10,11 +10,7 @@ on:
       - develop
 
   pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - closed
+    types: [opened, synchronize, reopened, closed]
 
   workflow_dispatch:
     inputs:
@@ -22,10 +18,7 @@ on:
         description: "Select environment"
         required: true
         type: choice
-        options:
-          - develop
-          - beta
-          - main
+        options: [develop, beta, main]
       version:
         description: "Optional version"
         required: false
@@ -34,7 +27,7 @@ jobs:
 
   versioning:
     runs-on: [self-hosted, Windows, X64]
-    if: ${{ github.event_name == 'push' && startsWith(github.ref_name, 'feature/') }}
+    if: github.event_name == 'push' && startsWith(github.ref_name, 'feature/')
 
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +44,7 @@ jobs:
 
   preview-deploy:
     runs-on: [self-hosted, Windows, X64]
-    if: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' }}
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
 
     steps:
       - uses: actions/checkout@v4
@@ -62,9 +55,9 @@ jobs:
           $branch = "${{ github.event.pull_request.head.ref }}"
           $safe = $branch -replace '[^a-zA-Z0-9]', '-'
 
-          "NAMESPACE=$safe" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "HOST=$safe.127.0.0.1.nip.io" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$safe-${{ github.run_number }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "NAMESPACE=$safe" >> $env:GITHUB_ENV
+          "HOST=$safe.127.0.0.1.nip.io" >> $env:GITHUB_ENV
+          "IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$safe-${{ github.run_number }}" >> $env:GITHUB_ENV
 
       - name: Docker Login
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
@@ -77,23 +70,21 @@ jobs:
       - name: Create Namespace
         run: kubectl create namespace $env:NAMESPACE || exit 0
 
-      - name: Deploy to Kubernetes
+      - name: Deploy
         shell: powershell
         run: |
-          $content = Get-Content deployment.yml
-          $content = $content -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE"
-          $content = $content -replace 'HOST_PLACEHOLDER', "$env:HOST"
-          $content | Set-Content final.yml
+          (Get-Content deployment.yml) `
+            -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE" `
+            -replace 'HOST_PLACEHOLDER', "$env:HOST" |
+            kubectl apply -n $env:NAMESPACE -f -
 
-          kubectl apply -n $env:NAMESPACE -f final.yml
-
-      - name: Show Preview URL
-        run: echo "🚀 Preview: http://$env:HOST"
+      - name: Show URL
+        run: echo "http://$env:HOST"
 
 
   cleanup:
     runs-on: [self-hosted, Windows, X64]
-    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' }}
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
 
     steps:
       - name: Delete Namespace
@@ -106,7 +97,11 @@ jobs:
 
   deploy:
     runs-on: [self-hosted, Windows, X64]
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: github.event_name == 'workflow_dispatch'
+
+    env:
+      INPUT_ENV: ${{ inputs.environment }}
+      INPUT_VERSION: ${{ inputs.version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -117,30 +112,28 @@ jobs:
         run: |
           git fetch --tags --force
 
-          $inputVersion = "${{ github.event.inputs.version }}"
-
-          if ([string]::IsNullOrEmpty($inputVersion)) {
+          if ([string]::IsNullOrEmpty($env:INPUT_VERSION)) {
             $version = git tag --sort=-v:refname | Select-Object -First 1
           } else {
-            $version = $inputVersion
+            $version = $env:INPUT_VERSION
           }
 
-          "resolved=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "resolved=$version" >> $env:GITHUB_OUTPUT
 
       - name: Docker Login
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-      - name: Build & Push Image
+      - name: Build & Push
         shell: powershell
         run: |
           $version = "${{ steps.version.outputs.resolved }}"
-          $envName = "${{ github.event.inputs.environment }}"
+          $envName = $env:INPUT_ENV
 
           if ($envName -eq "develop") {
             $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$version"
           } elseif ($envName -eq "beta") {
             $image = "${{ secrets.DOCKER_USERNAME }}/stage-test:$version"
-          } elseif ($envName -eq "main") {
+          } else {
             $image = "${{ secrets.DOCKER_USERNAME }}/prod-test:$version"
           }
 
@@ -149,21 +142,19 @@ jobs:
 
           kubectl create namespace $envName || exit 0
 
-          $content = Get-Content deployment.yml
-          $content = $content -replace 'IMAGE_PLACEHOLDER', "$image"
-          $content = $content -replace 'HOST_PLACEHOLDER', "$envName.127.0.0.1.nip.io"
-          $content | Set-Content final.yml
-
-          kubectl apply -n $envName -f final.yml
+          (Get-Content deployment.yml) `
+            -replace 'IMAGE_PLACEHOLDER', "$image" `
+            -replace 'HOST_PLACEHOLDER', "$envName.127.0.0.1.nip.io" |
+            kubectl apply -n $envName -f -
 
 
   health-check:
     runs-on: ubuntu-latest
     needs: deploy
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.environment == 'main' }}
+    if: github.event_name == 'workflow_dispatch' && inputs.environment == 'main'
 
     steps:
-      - name: Wait 20 minutes
+      - name: Wait
         run: sleep 1200
 
       - name: Configure AWS
@@ -173,7 +164,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_LAMBDA }}
           aws-region: us-east-2
 
-      - name: Trigger Lambda
+      - name: Invoke Lambda
         run: |
           aws lambda invoke \
             --function-name Deepcarve_Backendwebsite_healthchecks \
