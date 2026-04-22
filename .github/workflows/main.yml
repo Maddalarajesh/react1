@@ -79,7 +79,7 @@ jobs:
           $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$name-${{ github.run_number }}"
 
           "NAMESPACE=$namespace" >> $env:GITHUB_ENV
-          "HOST=$host" >> $env:GITHUB_ENV
+          "HOST=$ingresshost" >> $env:GITHUB_ENV
           "IMAGE=$image" >> $env:GITHUB_ENV
 
       - name: Docker Login
