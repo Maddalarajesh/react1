@@ -1,18 +1,28 @@
-#Choose a base image
-FROM node
+# -------- Build Stage --------
+FROM node:18 AS build
 
-# Set the working dir when our container execution
-WORKDIR /usr/src/app
+WORKDIR /app
 
-# Copy the full of our applications bundles
-COPY . /usr/src/app
-
-# Install our packages
+COPY package*.json ./
 RUN npm install
+
+COPY . .
 RUN npm run build
 
-#Expose our application port
+
+# -------- Production Stage --------
+FROM node:18
+
+WORKDIR /app
+
+# Install lightweight static server
+RUN npm install -g serve
+
+# Copy build output
+COPY --from=build /app/build ./build
+
+# Expose port
 EXPOSE 3000
 
-# Set start command
-CMD [ "npm", "start" ]
+# Start production server
+CMD ["serve", "-s", "build", "-l", "3000"]
