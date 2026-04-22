@@ -87,6 +87,7 @@ jobs:
         shell: powershell
         run: |
           (Get-Content deployment.yml) `
+            -replace 'NAMESPACE_PLACEHOLDER', "$env:NAMESPACE" `
             -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE" `
             -replace 'HOST_PLACEHOLDER', "$env:HOST" |
             kubectl apply -n $env:NAMESPACE -f -
