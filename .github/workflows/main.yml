@@ -32,12 +32,9 @@ on:
 
 jobs:
 
-  # -------------------------
-  # VERSIONING
-  # -------------------------
   versioning:
     runs-on: [self-hosted, Windows, X64]
-    if: github.event_name == 'push' && startsWith(github.ref_name, 'feature/')
+    if: ${{ github.event_name == 'push' && startsWith(github.ref_name, 'feature/') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -52,12 +49,9 @@ jobs:
           git push origin $tag
 
 
-  # -------------------------
-  # PREVIEW DEPLOY (PR OPEN)
-  # -------------------------
   preview-deploy:
     runs-on: [self-hosted, Windows, X64]
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    if: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -97,12 +91,9 @@ jobs:
         run: echo "🚀 Preview: http://$env:HOST"
 
 
-  # -------------------------
-  # CLEANUP (PR CLOSED)
-  # -------------------------
   cleanup:
     runs-on: [self-hosted, Windows, X64]
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' }}
 
     steps:
       - name: Delete Namespace
@@ -110,16 +101,12 @@ jobs:
         run: |
           $branch = "${{ github.event.pull_request.head.ref }}"
           $safe = $branch -replace '[^a-zA-Z0-9]', '-'
-
           kubectl delete namespace $safe --ignore-not-found=true
 
 
-  # -------------------------
-  # MANUAL DEPLOY (STABLE ENV)
-  # -------------------------
   deploy:
     runs-on: [self-hosted, Windows, X64]
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ github.event_name == 'workflow_dispatch' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -130,10 +117,12 @@ jobs:
         run: |
           git fetch --tags --force
 
-          if ("${{ github.event.inputs.version }}" -eq "") {
+          $inputVersion = "${{ github.event.inputs.version }}"
+
+          if ([string]::IsNullOrEmpty($inputVersion)) {
             $version = git tag --sort=-v:refname | Select-Object -First 1
           } else {
-            $version = "${{ github.event.inputs.version }}"
+            $version = $inputVersion
           }
 
           "resolved=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -168,13 +157,10 @@ jobs:
           kubectl apply -n $envName -f final.yml
 
 
-  # -------------------------
-  # HEALTH CHECK (PROD ONLY)
-  # -------------------------
   health-check:
     runs-on: ubuntu-latest
     needs: deploy
-    if: github.event.inputs.environment == 'main'
+    if: ${{ github.event.inputs.environment == 'main' }}
 
     steps:
       - name: Wait 20 minutes
