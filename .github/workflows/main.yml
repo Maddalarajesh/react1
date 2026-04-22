@@ -1,4 +1,4 @@
-name: CI-CD (Manual Deploy + Auto Versioning)
+name: CI-CD (Preview + Controlled Release + Cleanup)
 
 permissions:
   contents: write
@@ -9,117 +9,188 @@ on:
       - feature/*
       - develop
 
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - closed
+
   workflow_dispatch:
     inputs:
       environment:
         description: "Select environment"
         required: true
         type: choice
-        options: [develop, beta, main]
-
+        options:
+          - develop
+          - beta
+          - main
       version:
-        description: "Optional: Enter version (leave empty for latest)"
+        description: "Optional version"
         required: false
 
 jobs:
+
+  # -------------------------
+  # VERSIONING
+  # -------------------------
   versioning:
-    runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'push' &&
-      (
-        startsWith(github.ref_name, 'feature/') ||
-        github.ref_name == 'develop'
-      )
-    outputs:
-      created_tag: ${{ steps.calc.outputs.version }}
+    runs-on: [self-hosted, Windows, X64]
+    if: github.event_name == 'push' && startsWith(github.ref_name, 'feature/')
+
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - id: calc
+
+      - name: Create Tag
+        shell: powershell
         run: |
           git fetch --tags --force
-          DATE=$(date +%Y-%m-%d)
-          TODAY_TAGS=$(git tag --list "v*.[0-9][0-9][0-9]-$DATE")
-          if [ -n "$TODAY_TAGS" ]; then
-            LAST_TAG=$(echo "$TODAY_TAGS" | sed "s/-$DATE//" | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
-            LAST_TAG="v$LAST_TAG-$DATE"
-          else
-            LAST_TAG=$(git tag --list "v*.[0-9][0-9][0-9]-*" | sed 's/-.*//' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
-            [ -z "$LAST_TAG" ] && LAST_TAG="1.0.000"
-            LAST_TAG="v$LAST_TAG-$DATE"
-          fi
-          VERSION=${LAST_TAG#v}
-          BASE_VERSION=$(echo $VERSION | cut -d'-' -f1)
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
-          PATCH=$((10#$PATCH))
-          COMMIT_MSG=$(git log -1 --pretty=%s | tr '[:upper:]' '[:lower:]')
-          if [[ "$COMMIT_MSG" == *enhancement* ]]; then MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0;
-          elif [[ "$COMMIT_MSG" == *feature* ]]; then MINOR=$((MINOR+1)); PATCH=0;
-          else PATCH=$((PATCH+1)); fi
-          PATCH_PADDED=$(printf "%03d" $PATCH)
-          NEW_TAG="v$MAJOR.$MINOR.$PATCH_PADDED-$DATE"
-          echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          if ! git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
-            git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
-            git push origin "$NEW_TAG"
-          fi
+          $date = Get-Date -Format "yyyy-MM-dd"
+          $tag = "v1.0.$(Get-Random)-$date"
+          git tag $tag
+          git push origin $tag
 
-  deploy:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
+
+  # -------------------------
+  # PREVIEW DEPLOY (PR OPEN)
+  # -------------------------
+  preview-deploy:
+    runs-on: [self-hosted, Windows, X64]
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+
+      - name: Set variables
+        shell: powershell
+        run: |
+          $branch = "${{ github.event.pull_request.head.ref }}"
+          $safe = $branch -replace '[^a-zA-Z0-9]', '-'
+
+          "NAMESPACE=$safe" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "HOST=$safe.127.0.0.1.nip.io" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$safe-${{ github.run_number }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Docker Login
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Build & Push Image
+        run: |
+          docker build -t $env:IMAGE .
+          docker push $env:IMAGE
+
+      - name: Create Namespace
+        run: kubectl create namespace $env:NAMESPACE || exit 0
+
+      - name: Deploy to Kubernetes
+        shell: powershell
+        run: |
+          $content = Get-Content deployment.yml
+          $content = $content -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE"
+          $content = $content -replace 'HOST_PLACEHOLDER', "$env:HOST"
+          $content | Set-Content final.yml
+
+          kubectl apply -n $env:NAMESPACE -f final.yml
+
+      - name: Show Preview URL
+        run: echo "🚀 Preview: http://$env:HOST"
+
+
+  # -------------------------
+  # CLEANUP (PR CLOSED)
+  # -------------------------
+  cleanup:
+    runs-on: [self-hosted, Windows, X64]
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+
+    steps:
+      - name: Delete Namespace
+        shell: powershell
+        run: |
+          $branch = "${{ github.event.pull_request.head.ref }}"
+          $safe = $branch -replace '[^a-zA-Z0-9]', '-'
+
+          kubectl delete namespace $safe --ignore-not-found=true
+
+
+  # -------------------------
+  # MANUAL DEPLOY (STABLE ENV)
+  # -------------------------
+  deploy:
+    runs-on: [self-hosted, Windows, X64]
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Resolve Version
         id: version
+        shell: powershell
         run: |
           git fetch --tags --force
-          if [[ -z "${{ github.event.inputs.version }}" ]]; then
-            VERSION=$(git tag --sort=-v:refname | head -n 1)
-          else
-            VERSION="${{ github.event.inputs.version }}"
-          fi
-          echo "resolved=$VERSION" >> $GITHUB_OUTPUT
-      - name: Deploy
-        run: |
-          VERSION="${{ steps.version.outputs.resolved }}"
-          ENV="${{ github.event.inputs.environment }}"
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git fetch --tags --force
-          if [[ "$ENV" == "develop" ]]; then git checkout $VERSION;
-          else git branch -f $ENV $VERSION; git push origin $ENV --force; git checkout $VERSION; fi
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-          if [[ "$ENV" == "develop" ]]; then IMAGE="${{ secrets.DOCKER_USERNAME }}/aesthisia-demo";
-          elif [[ "$ENV" == "beta" ]]; then IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test";
-          elif [[ "$ENV" == "main" ]]; then IMAGE="${{ secrets.DOCKER_USERNAME }}/prod-test"; fi
-          docker build -t $IMAGE:$VERSION .
-          docker push $IMAGE:$VERSION
 
+          if ("${{ github.event.inputs.version }}" -eq "") {
+            $version = git tag --sort=-v:refname | Select-Object -First 1
+          } else {
+            $version = "${{ github.event.inputs.version }}"
+          }
+
+          "resolved=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Docker Login
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Build & Push Image
+        shell: powershell
+        run: |
+          $version = "${{ steps.version.outputs.resolved }}"
+          $envName = "${{ github.event.inputs.environment }}"
+
+          if ($envName -eq "develop") {
+            $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$version"
+          } elseif ($envName -eq "beta") {
+            $image = "${{ secrets.DOCKER_USERNAME }}/stage-test:$version"
+          } elseif ($envName -eq "main") {
+            $image = "${{ secrets.DOCKER_USERNAME }}/prod-test:$version"
+          }
+
+          docker build -t $image .
+          docker push $image
+
+          kubectl create namespace $envName || exit 0
+
+          $content = Get-Content deployment.yml
+          $content = $content -replace 'IMAGE_PLACEHOLDER', "$image"
+          $content = $content -replace 'HOST_PLACEHOLDER', "$envName.127.0.0.1.nip.io"
+          $content | Set-Content final.yml
+
+          kubectl apply -n $envName -f final.yml
+
+
+  # -------------------------
+  # HEALTH CHECK (PROD ONLY)
+  # -------------------------
   health-check:
     runs-on: ubuntu-latest
     needs: deploy
-    # Only run this if the deployment was to 'main'
     if: github.event.inputs.environment == 'main'
-    steps:
-      - name: Wait for 20 minutes
-        run: sleep 120
 
-      - name: Configure AWS Credentials
+    steps:
+      - name: Wait 20 minutes
+        run: sleep 1200
+
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_LAMBDA }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_LAMBDA }}
           aws-region: us-east-2
 
-      - name: Trigger Health Check Lambda
+      - name: Trigger Lambda
         run: |
           aws lambda invoke \
             --function-name Deepcarve_Backendwebsite_healthchecks \
             --invocation-type RequestResponse \
             response.json
-          cat response.json 
+          cat response.json
