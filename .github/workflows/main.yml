@@ -75,7 +75,7 @@ jobs:
           $name = $branch.ToLower() -replace '[^a-z0-9]', '-'
 
           $namespace = $name
-          $host = "$name.127.0.0.1.nip.io"
+          $ingresshost = "$name.127.0.0.1.nip.io"
           $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$name-${{ github.run_number }}"
 
           "NAMESPACE=$namespace" >> $env:GITHUB_ENV
