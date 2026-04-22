@@ -199,7 +199,7 @@ jobs:
 
           (Get-Content deployment.yml) `
             -replace 'IMAGE_PLACEHOLDER', "$image" `
-            -replace 'HOST_PLACEHOLDER', "$host" |
+            -replace 'HOST_PLACEHOLDER', "$ingresshost" |
             kubectl apply -n $envName -f -
 
 
