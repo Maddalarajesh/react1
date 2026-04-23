@@ -190,7 +190,7 @@ jobs:
             $image = "${{ secrets.DOCKER_USERNAME }}/prod-test:$version"
           }
 
-          docker build -t $image .
+          docker build --target final -t $image .
           docker push $image
 
           kubectl create namespace $envName --dry-run=client -o yaml | kubectl apply -f -
