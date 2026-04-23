@@ -70,9 +70,8 @@ jobs:
 
   preview-deploy:
     runs-on: [self-hosted, Windows, X64]
-    # TRIGGER: Only on PRs coming FROM a sub-branch (contains a slash in the branch name)
     if: |
-      github.event_name == 'pull_request' && 
+      github.event_name == 'pull_request' &&  
       github.event.action != 'closed' &&
       contains(github.head_ref, '/') 
 
@@ -83,10 +82,9 @@ jobs:
         run: |
           $branch = "${{ github.head_ref }}"
           $name = $branch.ToLower() -replace '[^a-z0-9]', '-'
-          $namespace = $name
-          $ingressHost = "$name.127.0.0.1.nip.io"
           $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$name-${{ github.run_number }}"
-          "NAMESPACE=$namespace" >> $env:GITHUB_ENV
+          $ingressHost = "$name.127.0.0.1.nip.io"
+          "NAMESPACE=$name" >> $env:GITHUB_ENV
           "HOST=$ingressHost" >> $env:GITHUB_ENV
           "IMAGE=$image" >> $env:GITHUB_ENV
 
@@ -101,18 +99,19 @@ jobs:
         shell: powershell
         run: |
           kubectl create namespace $env:NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+          # Replacing placeholders AND injecting the browser fix directly into the YAML
           (Get-Content deployment.yml) `
             -replace 'NAMESPACE_PLACEHOLDER', "$env:NAMESPACE" `
             -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE" `
             -replace 'HOST_PLACEHOLDER', "$env:HOST" |
             kubectl apply -n $env:NAMESPACE -f -
-          # Force set BROWSER=none to prevent PowerShell crash
-          kubectl set env deployment/sample-app BROWSER=none -n $env:NAMESPACE
+          
+          # Ensure pods restart to pick up new image/env
+          kubectl rollout restart deployment/sample-app -n $env:NAMESPACE
 
   cleanup:
     runs-on: [self-hosted, Windows, X64]
     if: github.event_name == 'pull_request' && github.event.action == 'closed' && contains(github.head_ref, '/')
-
     steps:
       - name: Delete Dynamic Namespace
         shell: powershell
@@ -122,7 +121,6 @@ jobs:
 
   deploy:
     runs-on: [self-hosted, Windows, X64]
-    # TRIGGER: Push to develop/beta/main OR manual dispatch
     if: |
       github.event_name == 'workflow_dispatch' || 
       (github.event_name == 'push' && (github.ref_name == 'develop' || github.ref_name == 'beta' || github.ref_name == 'main'))
@@ -135,10 +133,10 @@ jobs:
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $envName = "${{ github.event.inputs.environment }}"
-            $version = if ("${{ github.event.inputs.version }}") { "${{ github.event.inputs.version }}" } else { "latest" }
+            $version = if ("${{ github.event.inputs.version }}") { "${{ github.event.inputs.version }}" } else { "v-${{ github.run_number }}" }
           } else {
             $envName = "${{ github.ref_name }}"
-            $version = "latest"
+            $version = "build-${{ github.run_number }}"
           }
           
           if ($envName -eq "develop") { $repo = "aesthisia-demo" }
@@ -170,7 +168,8 @@ jobs:
             -replace 'IMAGE_PLACEHOLDER', "$env:FINAL_IMAGE" `
             -replace 'HOST_PLACEHOLDER', "$ingressHost" |
             kubectl apply -n $envName -f -
-          kubectl set env deployment/sample-app BROWSER=none -n $envName
+          
+          kubectl rollout restart deployment/sample-app -n $envName
 
   health-check:
     runs-on: ubuntu-latest
