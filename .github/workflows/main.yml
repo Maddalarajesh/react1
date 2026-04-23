@@ -70,7 +70,7 @@ jobs:
 
   preview-deploy:
     runs-on: [self-hosted, Windows, X64]
-    # TRIGGER: Only on PRs coming FROM a sub-branch (contains a slash in the branch name)
+    # TRIGGER: Only on PRs coming FROM a sub-branch
     if: |
       github.event_name == 'pull_request' && 
       github.event.action != 'closed' &&
