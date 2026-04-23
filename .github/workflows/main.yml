@@ -70,12 +70,13 @@ jobs:
 
   preview-deploy:
     runs-on: [self-hosted, Windows, X64]
-    # TRIGGER: Only for sub-branches (e.g., feature/login/task1). 
-    # Logic: Must be a PR and branch name must contain at least one slash after 'feature/'
+    # Check if head_ref contains a second slash (indicating a sub-branch)
+    # e.g., "feature/login/task1" contains "feature/" AND another "/"
     if: |
       github.event_name == 'pull_request' && 
       github.event.action != 'closed' &&
-      github.head_ref -match '^feature/.+/.+'
+      startsWith(github.head_ref, 'feature/') &&
+      contains(substr(github.head_ref, 8), '/')
 
     steps:
       - uses: actions/checkout@v4
@@ -86,7 +87,6 @@ jobs:
           $name = $branch.ToLower() -replace '[^a-z0-9]', '-'
           $namespace = $name
           $ingressHost = "$name.127.0.0.1.nip.io"
-          # Using Run Number to ensure image is always "new" for K8s
           $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$name-${{ github.run_number }}"
           "NAMESPACE=$namespace" >> $env:GITHUB_ENV
           "HOST=$ingressHost" >> $env:GITHUB_ENV
@@ -109,12 +109,15 @@ jobs:
             -replace 'HOST_PLACEHOLDER', "$env:HOST" |
             kubectl apply -n $env:NAMESPACE -f -
           kubectl set env deployment/sample-app BROWSER=none -n $env:NAMESPACE
-          # Force rollout to ensure new image is pulled
           kubectl rollout restart deployment/sample-app -n $env:NAMESPACE
 
   cleanup:
     runs-on: [self-hosted, Windows, X64]
-    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.head_ref -match '^feature/.+/.+'
+    if: |
+      github.event_name == 'pull_request' && 
+      github.event.action == 'closed' && 
+      startsWith(github.head_ref, 'feature/') && 
+      contains(substr(github.head_ref, 8), '/')
 
     steps:
       - name: Delete Dynamic Namespace
@@ -125,14 +128,14 @@ jobs:
 
   deploy:
     runs-on: [self-hosted, Windows, X64]
-    # TRIGGER: Manual, or Push to develop, beta, main, or a top-level feature/ branch
+    # Only runs for manual dispatch, develop/beta/main, OR feature branches with NO sub-path
     if: |
       github.event_name == 'workflow_dispatch' || 
       (github.event_name == 'push' && (
         github.ref_name == 'develop' || 
         github.ref_name == 'beta' || 
         github.ref_name == 'main' || 
-        (startsWith(github.ref_name, 'feature/') && !(github.ref_name -match '^feature/.+/.+'))
+        (startsWith(github.ref_name, 'feature/') && !contains(substr(github.ref_name, 8), '/'))
       ))
 
     steps:
@@ -146,10 +149,10 @@ jobs:
             $version = if ("${{ github.event.inputs.version }}") { "${{ github.event.inputs.version }}" } else { "v-${{ github.run_number }}" }
           } else {
             $envName = "${{ github.ref_name }}"
-            # Avoiding 'latest' tag to ensure Kubernetes updates the pods
             $version = "build-${{ github.run_number }}"
           }
           
+          # Mapping to correct repository
           if ($envName -match "develop|feature") { $repo = "aesthisia-demo" }
           elseif ($envName -eq "beta") { $repo = "stage-test" }
           else { $repo = "prod-test" }
@@ -171,7 +174,6 @@ jobs:
         shell: powershell
         run: |
           $envName = "${{ steps.target.outputs.ENV }}"
-          # Clean name for feature branches (feature/login -> feature-login)
           $cleanEnv = $envName.ToLower() -replace '[^a-z0-9]', '-'
           $ingressHost = "$cleanEnv.127.0.0.1.nip.io"
           
