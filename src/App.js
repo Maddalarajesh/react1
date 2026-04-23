@@ -7,7 +7,7 @@ function App() {
       <header className="App-header">
         <img src={logo} className="App-logo" alt="logo" />
         <p>
-          Welcome to react javascript, You are almost there for testing!
+          Welcome to react javascript, checking for today feature branch changes!
           Adding the versioning changes to updated branches of react javascript
         </p>
         <a
