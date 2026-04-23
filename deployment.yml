@@ -15,7 +15,9 @@ spec:
     spec:
       containers:
       - name: sample-app
-        image: rajeshmaddala/prod-test:v4.1.020-2026-04-21
+        image: IMAGE_PLACEHOLDER
+        # Force K8s to pull the latest image even if the tag is the same
+        imagePullPolicy: Always
         ports:
         - containerPort: 3000
 ---
