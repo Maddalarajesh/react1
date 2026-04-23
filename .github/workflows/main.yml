@@ -6,7 +6,6 @@ permissions:
 on:
   push:
     branches:
-      - feature/*
       - develop
 
   pull_request:
@@ -26,7 +25,7 @@ on:
 jobs:
 
 # =========================
-# 🔖 VERSIONING (ONLY CREATE TAG)
+# 🔖 VERSIONING (ONLY DEVELOP)
 # =========================
   versioning:
     runs-on: [self-hosted, Windows, X64]
@@ -106,9 +105,13 @@ jobs:
           $branch = "${{ github.event.pull_request.head.ref }}"
           $name = $branch.ToLower() -replace '[^a-z0-9]', '-'
 
-          "NAMESPACE=$name" >> $env:GITHUB_ENV
-          "HOST=$name.127.0.0.1.nip.io" >> $env:GITHUB_ENV
-          "IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$name-${{ github.run_number }}" >> $env:GITHUB_ENV
+          $namespace = $name
+          $ingressHost = "$name.127.0.0.1.nip.io"
+          $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$name-${{ github.run_number }}"
+
+          "NAMESPACE=$namespace" >> $env:GITHUB_ENV
+          "INGRESS_HOST=$ingressHost" >> $env:GITHUB_ENV
+          "IMAGE=$image" >> $env:GITHUB_ENV
 
       - name: Docker Login
         shell: powershell
@@ -125,21 +128,26 @@ jobs:
         run: |
           kubectl create namespace $env:NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Deploy Preview
+      - name: Prepare Manifest
         shell: powershell
         run: |
           (Get-Content deployment.yml) `
             -replace 'NAMESPACE_PLACEHOLDER', "$env:NAMESPACE" `
             -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE" `
-            -replace 'HOST_PLACEHOLDER', "$env:HOST" |
-            kubectl apply -n $env:NAMESPACE -f -
+            -replace 'HOST_PLACEHOLDER', "$env:INGRESS_HOST" |
+            Set-Content rendered.yml
+
+      - name: Apply Preview
+        shell: powershell
+        run: |
+          kubectl apply -n $env:NAMESPACE -f rendered.yml
 
       - name: Show URL
         shell: powershell
-        run: echo "🚀 Preview: http://$env:HOST"
+        run: echo "🚀 Preview: http://$env:INGRESS_HOST"
 
 # =========================
-# 🧹 CLEANUP (PR CLOSED)
+# 🧹 CLEANUP
 # =========================
   cleanup:
     runs-on: [self-hosted, Windows, X64]
@@ -159,7 +167,7 @@ jobs:
           kubectl delete namespace $name --ignore-not-found=true
 
 # =========================
-# 🌍 MANUAL DEPLOY (ALL ENVIRONMENTS)
+# 🌍 MANUAL DEPLOY
 # =========================
   deploy:
     runs-on: [self-hosted, Windows, X64]
@@ -176,7 +184,7 @@ jobs:
         shell: powershell
         run: Set-ExecutionPolicy Bypass -Scope Process -Force
 
-      - name: Set Deployment Config
+      - name: Set Config
         shell: powershell
         run: |
           $envName = "$env:ENVIRONMENT"
@@ -190,16 +198,21 @@ jobs:
             $image = "${{ secrets.DOCKER_USERNAME }}/prod-test:$version"
           }
 
-          $host = "$envName.127.0.0.1.nip.io"
+          $ingressHost = "$envName.127.0.0.1.nip.io"
 
           "IMAGE=$image" >> $env:GITHUB_ENV
-          "HOST=$host" >> $env:GITHUB_ENV
+          "INGRESS_HOST=$ingressHost" >> $env:GITHUB_ENV
           "NAMESPACE=$envName" >> $env:GITHUB_ENV
 
-      - name: Deploy to Cluster
+      - name: Prepare Manifest
         shell: powershell
         run: |
           (Get-Content deployment.yml) `
             -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE" `
-            -replace 'HOST_PLACEHOLDER', "$env:HOST" |
-            kubectl apply -n $env:NAMESPACE -f -
+            -replace 'HOST_PLACEHOLDER', "$env:INGRESS_HOST" |
+            Set-Content rendered.yml
+
+      - name: Deploy
+        shell: powershell
+        run: |
+          kubectl apply -n $env:NAMESPACE -f rendered.yml
