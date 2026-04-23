@@ -6,10 +6,7 @@ permissions:
 on:
   push:
     branches:
-      - 'feature/*'
-      - develop
-      - beta
-      - main
+      - '**' # Trigger on all branches to be safe
   pull_request:
     types: [opened, synchronize, reopened, closed]
   workflow_dispatch:
@@ -26,9 +23,10 @@ on:
 jobs:
   versioning:
     runs-on: [self-hosted, Windows, X64]
+    # Only version on actual merges/pushes to develop or feature-level branches
     if: |
       github.event_name == 'push' &&
-      (startsWith(github.ref_name, 'feature/') || github.ref_name == 'develop')
+      (github.ref_name == 'develop' || startsWith(github.ref_name, 'feature/'))
     outputs:
       created_tag: ${{ steps.calc.outputs.version }}
     steps:
@@ -70,14 +68,13 @@ jobs:
 
   preview-deploy:
     runs-on: [self-hosted, Windows, X64]
-    # Logic: If branch starts with feature/ and contains another slash, it is a sub-branch.
-    # Note: 'feature/' is 8 chars, so we check if the string contains a slash.
+    # TRIGGER: Any PR that is NOT from develop, beta, or main
     if: |
       github.event_name == 'pull_request' && 
       github.event.action != 'closed' &&
-      startsWith(github.head_ref, 'feature/') &&
-      contains(github.head_ref, '/') &&
-      github.head_ref != 'feature/'
+      github.head_ref != 'develop' &&
+      github.head_ref != 'beta' &&
+      github.head_ref != 'main'
 
     steps:
       - uses: actions/checkout@v4
@@ -110,8 +107,9 @@ jobs:
     if: |
       github.event_name == 'pull_request' && 
       github.event.action == 'closed' && 
-      startsWith(github.head_ref, 'feature/') && 
-      contains(github.head_ref, '/')
+      github.head_ref != 'develop' &&
+      github.head_ref != 'beta' &&
+      github.head_ref != 'main'
 
     steps:
       - name: Delete Namespace
@@ -122,13 +120,13 @@ jobs:
 
   deploy:
     runs-on: [self-hosted, Windows, X64]
-    # Logic: Runs for develop, beta, main. For feature branches, only if they DON'T look like sub-branches.
+    # TRIGGER: Manual dispatch OR Push to the "permanent" branches
     if: |
       github.event_name == 'workflow_dispatch' || 
       (github.event_name == 'push' && (
         github.ref_name == 'develop' || 
         github.ref_name == 'beta' || 
-        github.ref_name == 'main' || 
+        github.ref_name == 'main' ||
         (startsWith(github.ref_name, 'feature/') && !contains(github.ref_name, '/'))
       ))
 
