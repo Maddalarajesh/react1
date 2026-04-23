@@ -18,6 +18,9 @@ spec:
         image: IMAGE_PLACEHOLDER
         # Force K8s to pull the latest image even if the tag is the same
         imagePullPolicy: Always
+        env:
+        - name: BROWSER
+          value: "none"
         ports:
         - containerPort: 3000
 ---
