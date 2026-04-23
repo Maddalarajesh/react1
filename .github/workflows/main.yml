@@ -1,250 +1,42 @@
-name: CI-CD (Preview + Controlled Release + Cleanup)
-
-permissions:
-  contents: write
+name: Runner Debug Test
 
 on:
-  push:
-    branches:
-      - 'feature/*'
-      - develop
-      - beta
-      - main
-
-  pull_request:
-    types: [opened, synchronize, reopened, closed]
-
   workflow_dispatch:
-    inputs:
-      environment:
-        description: "Select environment"
-        required: true
-        type: choice
-        options: [develop, beta, main]
-      version:
-        description: "Optional version"
-        required: false
 
 jobs:
-
-# =========================
-# 🔖 VERSIONING
-# =========================
-  versioning:
+  test-runner:
     runs-on: [self-hosted, Windows, X64]
-    if: github.event_name == 'push' && (startsWith(github.ref_name, 'feature/') || github.ref_name == 'develop')
-
-    outputs:
-      created_tag: ${{ steps.calc.outputs.version }}
+    timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Fix PowerShell Execution Policy
-        shell: powershell
-        run: Set-ExecutionPolicy Bypass -Scope Process -Force
-
-      - id: calc
+      - name: Step 1 - Basic Echo
         shell: powershell
         run: |
-          Write-Host "🚀 VERSIONING START"
+          echo "✅ Runner is executing steps"
+          echo "Machine: $env:COMPUTERNAME"
+          echo "User: $env:USERNAME"
 
-          git fetch --tags --force
-          $date = Get-Date -Format "yyyy-MM-dd"
-
-          $todayTags = git tag --list "v*.[0-9][0-9][0-9]-$date"
-
-          if ($todayTags) {
-            $lastTag = $todayTags |
-              ForEach-Object { $_ -replace "-$date","" -replace "^v","" } |
-              Sort-Object { ($_ -split '\.')[0,1,2] } |
-              Select-Object -Last 1
-            $lastTag = "v$lastTag-$date"
-          } else {
-            $lastTag = git tag --list "v*.[0-9][0-9][0-9]-*" |
-              ForEach-Object { $_ -replace "-.*","" -replace "^v","" } |
-              Sort-Object { ($_ -split '\.')[0,1,2] } |
-              Select-Object -Last 1
-
-            if (-not $lastTag) { $lastTag = "1.0.000" }
-
-            $lastTag = "v$lastTag-$date"
-          }
-
-          $version = $lastTag.TrimStart("v")
-          $base = $version.Split("-")[0]
-          $parts = $base.Split(".")
-
-          $major = [int]$parts[0]
-          $minor = [int]$parts[1]
-          $patch = [int]$parts[2]
-
-          $commitMsg = (git log -1 --pretty=%s).ToLower()
-
-          if ($commitMsg -like "*enhancement*") {
-            $major++; $minor=0; $patch=0
-          } elseif ($commitMsg -like "*feature*") {
-            $minor++; $patch=0
-          } else {
-            $patch++
-          }
-
-          $patchPadded = "{0:D3}" -f $patch
-          $newTag = "v$major.$minor.$patchPadded-$date"
-
-          echo "version=$newTag" >> $env:GITHUB_OUTPUT
-
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-
-          $exists = git tag --list $newTag
-
-          if (-not $exists) {
-            git tag -a $newTag -m "Release $newTag"
-            git push origin $newTag
-          } else {
-            Write-Host "⚠️ Tag already exists"
-          }
-
-
-# =========================
-# 🚀 PREVIEW DEPLOY (PR)
-# =========================
-  preview-deploy:
-    runs-on: [self-hosted, Windows, X64]
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Debug Start
+      - name: Step 2 - Check PowerShell
         shell: powershell
         run: |
-          Write-Host "🚀 PREVIEW DEPLOY START"
-          echo "Branch: ${{ github.head_ref }}"
+          $ProgressPreference = 'SilentlyContinue'
+          $ErrorActionPreference = "Stop"
+          echo "✅ PowerShell working"
 
-      - name: Set dynamic variables
+      - name: Step 3 - Check Docker
         shell: powershell
         run: |
-          $branch = "${{ github.head_ref }}"
-          $name = $branch.ToLower() -replace '[^a-z0-9]', '-'
+          docker version
 
-          $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$name-${{ github.run_number }}"
-          $ingressHost = "$name.127.0.0.1.nip.io"
-
-          "NAMESPACE=$name" >> $env:GITHUB_ENV
-          "INGRESS_HOST=$ingressHost" >> $env:GITHUB_ENV
-          "IMAGE=$image" >> $env:GITHUB_ENV
-
-      - name: Docker Build & Push
+      - name: Step 4 - Check Kubernetes
         shell: powershell
         run: |
-          docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
-          docker build -t $env:IMAGE .
-          docker push $env:IMAGE
+          kubectl version --client
+          kubectl get nodes
 
-      - name: Deploy to Dynamic Namespace
+      - name: Step 5 - Sleep Test
         shell: powershell
         run: |
-          kubectl create namespace $env:NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
-
-          (Get-Content deployment.yml) `
-            -replace 'NAMESPACE_PLACEHOLDER', "$env:NAMESPACE" `
-            -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE" `
-            -replace 'HOST_PLACEHOLDER', "$env:INGRESS_HOST" |
-            kubectl apply -n $env:NAMESPACE -f -
-
-          kubectl rollout restart deployment/sample-app -n $env:NAMESPACE
-
-
-# =========================
-# 🧹 CLEANUP
-# =========================
-  cleanup:
-    runs-on: [self-hosted, Windows, X64]
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
-
-    steps:
-      - name: Delete Dynamic Namespace
-        shell: powershell
-        run: |
-          $name = "${{ github.head_ref }}".ToLower() -replace '[^a-z0-9]', '-'
-          kubectl delete namespace $name --ignore-not-found=true
-
-
-# =========================
-# 🌍 ENV DEPLOY (develop/beta/main)
-# =========================
-  deploy:
-    runs-on: [self-hosted, Windows, X64]
-    if: github.event_name == 'push' && (github.ref_name == 'develop' || github.ref_name == 'beta' || github.ref_name == 'main')
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Debug Start
-        shell: powershell
-        run: |
-          Write-Host "🚀 ENV DEPLOY START"
-          echo "Branch: ${{ github.ref_name }}"
-
-      - name: Set Environment Config
-        id: config
-        shell: powershell
-        run: |
-          $envName = "${{ github.ref_name }}"
-
-          if ($envName -eq "develop") { $repo = "aesthisia-demo" }
-          elseif ($envName -eq "beta") { $repo = "stage-test" }
-          else { $repo = "prod-test" }
-
-          $image = "${{ secrets.DOCKER_USERNAME }}/$repo:build-${{ github.run_number }}"
-          $ingressHost = "$envName.127.0.0.1.nip.io"
-
-          "ENV_NAME=$envName" >> $env:GITHUB_ENV
-          "IMAGE=$image" >> $env:GITHUB_ENV
-          "INGRESS_HOST=$ingressHost" >> $env:GITHUB_ENV
-
-      - name: Build & Push
-        shell: powershell
-        run: |
-          docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
-          docker build -t $env:IMAGE .
-          docker push $env:IMAGE
-
-      - name: Deploy
-        shell: powershell
-        run: |
-          kubectl create namespace $env:ENV_NAME --dry-run=client -o yaml | kubectl apply -f -
-
-          (Get-Content deployment.yml) `
-            -replace 'NAMESPACE_PLACEHOLDER', "$env:ENV_NAME" `
-            -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE" `
-            -replace 'HOST_PLACEHOLDER', "$env:INGRESS_HOST" |
-            kubectl apply -n $env:ENV_NAME -f -
-
-          kubectl rollout restart deployment/sample-app -n $env:ENV_NAME
-
-
-# =========================
-# 🩺 HEALTH CHECK
-# =========================
-  health-check:
-    runs-on: ubuntu-latest
-    needs: deploy
-    if: github.ref_name == 'main'
-
-    steps:
-      - name: Wait
-        run: sleep 1200
-
-      - name: Invoke Lambda
-        run: |
-          aws lambda invoke \
-            --function-name Deepcarve_Backendwebsite_healthchecks \
-            --invocation-type RequestResponse \
-            response.json
-
-          cat response.json
+          echo "Sleeping for 10 seconds..."
+          Start-Sleep -Seconds 10
+          echo "✅ Completed"
