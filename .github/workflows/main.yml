@@ -70,11 +70,12 @@ jobs:
 
   preview-deploy:
     runs-on: [self-hosted, Windows, X64]
-    # TRIGGER: Only on PRs coming FROM a sub-branch (contains a slash in the branch name)
+    # TRIGGER: Only for sub-branches (e.g., feature/login/task1). 
+    # Logic: Must be a PR and branch name must contain at least one slash after 'feature/'
     if: |
       github.event_name == 'pull_request' && 
       github.event.action != 'closed' &&
-      contains(github.head_ref, '/') 
+      github.head_ref -match '^feature/.+/.+'
 
     steps:
       - uses: actions/checkout@v4
@@ -85,6 +86,7 @@ jobs:
           $name = $branch.ToLower() -replace '[^a-z0-9]', '-'
           $namespace = $name
           $ingressHost = "$name.127.0.0.1.nip.io"
+          # Using Run Number to ensure image is always "new" for K8s
           $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$name-${{ github.run_number }}"
           "NAMESPACE=$namespace" >> $env:GITHUB_ENV
           "HOST=$ingressHost" >> $env:GITHUB_ENV
@@ -106,12 +108,13 @@ jobs:
             -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE" `
             -replace 'HOST_PLACEHOLDER', "$env:HOST" |
             kubectl apply -n $env:NAMESPACE -f -
-          # Force set BROWSER=none to prevent PowerShell crash
           kubectl set env deployment/sample-app BROWSER=none -n $env:NAMESPACE
+          # Force rollout to ensure new image is pulled
+          kubectl rollout restart deployment/sample-app -n $env:NAMESPACE
 
   cleanup:
     runs-on: [self-hosted, Windows, X64]
-    if: github.event_name == 'pull_request' && github.event.action == 'closed' && contains(github.head_ref, '/')
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.head_ref -match '^feature/.+/.+'
 
     steps:
       - name: Delete Dynamic Namespace
@@ -122,10 +125,15 @@ jobs:
 
   deploy:
     runs-on: [self-hosted, Windows, X64]
-    # TRIGGER: Push to develop/beta/main OR manual dispatch
+    # TRIGGER: Manual, or Push to develop, beta, main, or a top-level feature/ branch
     if: |
       github.event_name == 'workflow_dispatch' || 
-      (github.event_name == 'push' && (github.ref_name == 'develop' || github.ref_name == 'beta' || github.ref_name == 'main'))
+      (github.event_name == 'push' && (
+        github.ref_name == 'develop' || 
+        github.ref_name == 'beta' || 
+        github.ref_name == 'main' || 
+        (startsWith(github.ref_name, 'feature/') && !(github.ref_name -match '^feature/.+/.+'))
+      ))
 
     steps:
       - uses: actions/checkout@v4
@@ -135,13 +143,14 @@ jobs:
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $envName = "${{ github.event.inputs.environment }}"
-            $version = if ("${{ github.event.inputs.version }}") { "${{ github.event.inputs.version }}" } else { "latest" }
+            $version = if ("${{ github.event.inputs.version }}") { "${{ github.event.inputs.version }}" } else { "v-${{ github.run_number }}" }
           } else {
             $envName = "${{ github.ref_name }}"
-            $version = "latest"
+            # Avoiding 'latest' tag to ensure Kubernetes updates the pods
+            $version = "build-${{ github.run_number }}"
           }
           
-          if ($envName -eq "develop") { $repo = "aesthisia-demo" }
+          if ($envName -match "develop|feature") { $repo = "aesthisia-demo" }
           elseif ($envName -eq "beta") { $repo = "stage-test" }
           else { $repo = "prod-test" }
 
@@ -158,19 +167,24 @@ jobs:
           docker push $image
           "FINAL_IMAGE=$image" >> $env:GITHUB_ENV
 
-      - name: Deploy to Fixed Namespace
+      - name: Deploy to Static Namespace
         shell: powershell
         run: |
           $envName = "${{ steps.target.outputs.ENV }}"
-          $ingressHost = "$envName.127.0.0.1.nip.io"
-          kubectl create namespace $envName --dry-run=client -o yaml | kubectl apply -f -
+          # Clean name for feature branches (feature/login -> feature-login)
+          $cleanEnv = $envName.ToLower() -replace '[^a-z0-9]', '-'
+          $ingressHost = "$cleanEnv.127.0.0.1.nip.io"
+          
+          kubectl create namespace $cleanEnv --dry-run=client -o yaml | kubectl apply -f -
           
           (Get-Content deployment.yml) `
-            -replace 'NAMESPACE_PLACEHOLDER', "$envName" `
+            -replace 'NAMESPACE_PLACEHOLDER', "$cleanEnv" `
             -replace 'IMAGE_PLACEHOLDER', "$env:FINAL_IMAGE" `
             -replace 'HOST_PLACEHOLDER', "$ingressHost" |
-            kubectl apply -n $envName -f -
-          kubectl set env deployment/sample-app BROWSER=none -n $envName
+            kubectl apply -n $cleanEnv -f -
+          
+          kubectl set env deployment/sample-app BROWSER=none -n $cleanEnv
+          kubectl rollout restart deployment/sample-app -n $cleanEnv
 
   health-check:
     runs-on: ubuntu-latest
