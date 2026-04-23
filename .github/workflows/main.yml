@@ -90,7 +90,7 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-          if (-not (git rev-parse $newTag 2>$null)) {
+          if if (-not $tagExists) { {
             git tag -a $newTag -m "Release $newTag"
             git push origin $newTag
           }
