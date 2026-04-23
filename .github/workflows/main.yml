@@ -75,11 +75,11 @@ jobs:
           $name = $branch.ToLower() -replace '[^a-z0-9]', '-'
 
           $namespace = $name
-          $host = "$name.127.0.0.1.nip.io"
+          $ingresshost = "$name.127.0.0.1.nip.io"
           $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$name-${{ github.run_number }}"
 
           "NAMESPACE=$namespace" >> $env:GITHUB_ENV
-          "HOST=$host" >> $env:GITHUB_ENV
+          "HOST=$ingresshost" >> $env:GITHUB_ENV
           "IMAGE=$image" >> $env:GITHUB_ENV
 
       - name: Docker Login
@@ -190,7 +190,7 @@ jobs:
             $image = "${{ secrets.DOCKER_USERNAME }}/prod-test:$version"
           }
 
-          docker build -t $image .
+          docker build --target final -t $image .
           docker push $image
 
           kubectl create namespace $envName --dry-run=client -o yaml | kubectl apply -f -
@@ -199,7 +199,7 @@ jobs:
 
           (Get-Content deployment.yml) `
             -replace 'IMAGE_PLACEHOLDER', "$image" `
-            -replace 'HOST_PLACEHOLDER', "$host" |
+            -replace 'HOST_PLACEHOLDER', "$ingresshost" |
             kubectl apply -n $envName -f -
 
 
