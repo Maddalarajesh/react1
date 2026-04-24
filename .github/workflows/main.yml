@@ -6,7 +6,7 @@ permissions:
 on:
   push:
     branches:
-      - '**' # Trigger on all branches to be safe
+      - '**'
   pull_request:
     types: [opened, synchronize, reopened, closed]
   workflow_dispatch:
@@ -23,7 +23,6 @@ on:
 jobs:
   versioning:
     runs-on: [self-hosted, Windows, X64]
-    # Only version on actual merges/pushes to develop or feature-level branches
     if: |
       github.event_name == 'push' &&
       (github.ref_name == 'develop' || startsWith(github.ref_name, 'feature/'))
@@ -68,7 +67,6 @@ jobs:
 
   preview-deploy:
     runs-on: [self-hosted, Windows, X64]
-    # TRIGGER: Any PR that is NOT from develop, beta, or main
     if: |
       github.event_name == 'pull_request' && 
       github.event.action != 'closed' &&
@@ -81,23 +79,32 @@ jobs:
       - name: Build and Deploy Preview
         shell: powershell
         run: |
+          # Variable Resolution
           $branch = "${{ github.head_ref }}"
           $name = $branch.ToLower() -replace '[^a-z0-9]', '-'
           $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$($name)-${{ github.run_number }}"
-          $host = "$($name).127.0.0.1.nip.io"
           
+          # Renamed from $host to $ingressHost to avoid PowerShell reserved variable conflict
+          $ingressHost = "$($name).127.0.0.1.nip.io"
+          
+          Write-Host "Logging into Docker..."
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          
+          Write-Host "Building image: $image"
           docker build -t $image .
           docker push $image
 
+          Write-Host "Creating Namespace: $name"
           kubectl create namespace $name --dry-run=client -o yaml | kubectl apply -f -
           
+          Write-Host "Patching Deployment Manifest with Host: $ingressHost"
           (Get-Content deployment.yml) `
             -replace 'NAMESPACE_PLACEHOLDER', $name `
             -replace 'IMAGE_PLACEHOLDER', $image `
-            -replace 'HOST_PLACEHOLDER', $host | 
+            -replace 'HOST_PLACEHOLDER', $ingressHost | 
             Out-File -FilePath patched-deploy.yml -Encoding utf8
           
+          Write-Host "Applying to Kubernetes..."
           kubectl apply -f patched-deploy.yml -n $name
           kubectl set env deployment/sample-app BROWSER=none -n $name
           kubectl rollout restart deployment/sample-app -n $name
@@ -120,7 +127,6 @@ jobs:
 
   deploy:
     runs-on: [self-hosted, Windows, X64]
-    # TRIGGER: Manual dispatch OR Push to the "permanent" branches
     if: |
       github.event_name == 'workflow_dispatch' || 
       (github.event_name == 'push' && (
@@ -149,6 +155,8 @@ jobs:
 
           $image = "${{ secrets.DOCKER_USERNAME }}/$($repo):$version"
           $cleanEnv = $envName.ToLower() -replace '[^a-z0-9]', '-'
+          
+          # Renamed variable here as well for consistency
           $ingressHost = "$($cleanEnv).127.0.0.1.nip.io"
 
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
