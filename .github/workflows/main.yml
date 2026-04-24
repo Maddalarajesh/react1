@@ -19,7 +19,7 @@ on:
         type: choice
         options: [develop, beta, main]
       version:
-        description: "Optional version"
+        description: "Optional version (tag)"
         required: false
 
 jobs:
@@ -34,15 +34,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Fix PowerShell Execution Policy
         shell: powershell
         run: Set-ExecutionPolicy Bypass -Scope Process -Force
+
       - id: calc
         shell: powershell
         run: |
           git fetch --tags --force
           $date = Get-Date -Format "yyyy-MM-dd"
+
           $todayTags = git tag --list "v*.[0-9][0-9][0-9]-$date"
+
           if ($todayTags) {
             $lastTag = $todayTags | ForEach-Object { $_ -replace "-$date","" -replace "^v","" } | Sort-Object { ($_ -split '\.')[0,1,2] } | Select-Object -Last 1
             $lastTag = "v$lastTag-$date"
@@ -51,25 +55,39 @@ jobs:
             if (-not $lastTag) { $lastTag = "1.0.000" }
             $lastTag = "v$lastTag-$date"
           }
+
           $version = $lastTag.TrimStart("v")
           $base = $version.Split("-")[0]
           $parts = $base.Split(".")
-          $major = [int]$parts[0]; $minor = [int]$parts[1]; $patch = [int]$parts[2]
+          $major = [int]$parts[0]
+          $minor = [int]$parts[1]
+          $patch = [int]$parts[2]
+
           $commitMsg = (git log -1 --pretty=%s).ToLower()
-          if ($commitMsg -like "*enhancement*") { $major++; $minor=0; $patch=0 }
-          elseif ($commitMsg -like "*feature*") { $minor++; $patch=0 }
-          else { $patch++ }
+
+          if ($commitMsg -like "*enhancement*") {
+            $major++; $minor=0; $patch=0
+          }
+          elseif ($commitMsg -like "*feature*") {
+            $minor++; $patch=0
+          }
+          else {
+            $patch++
+          }
+
           $patchPadded = "{0:D3}" -f $patch
           $newTag = "v$major.$minor.$patchPadded-$date"
+
           echo "version=$newTag" >> $env:GITHUB_OUTPUT
+
           git config user.name "github-actions"
           git config user.email "actions@github.com"
+
           git tag -a $newTag -m "Release $newTag"
           git push origin $newTag
 
   preview-deploy:
     runs-on: [self-hosted, Windows, X64]
-    # TRIGGER: Only on PRs coming FROM a sub-branch (contains a slash in the branch name)
     if: |
       github.event_name == 'pull_request' && 
       github.event.action != 'closed' &&
@@ -77,6 +95,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
       - name: Set dynamic variables
         shell: powershell
         run: |
@@ -85,6 +104,7 @@ jobs:
           $namespace = $name
           $ingressHost = "$name.127.0.0.1.nip.io"
           $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$name-${{ github.run_number }}"
+
           "NAMESPACE=$namespace" >> $env:GITHUB_ENV
           "HOST=$ingressHost" >> $env:GITHUB_ENV
           "IMAGE=$image" >> $env:GITHUB_ENV
@@ -100,12 +120,13 @@ jobs:
         shell: powershell
         run: |
           kubectl create namespace $env:NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+
           (Get-Content deployment.yml) `
             -replace 'NAMESPACE_PLACEHOLDER', "$env:NAMESPACE" `
             -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE" `
             -replace 'HOST_PLACEHOLDER', "$env:HOST" |
             kubectl apply -n $env:NAMESPACE -f -
-          # Force set BROWSER=none to prevent PowerShell crash
+
           kubectl set env deployment/sample-app BROWSER=none -n $env:NAMESPACE
 
   cleanup:
@@ -121,25 +142,30 @@ jobs:
 
   deploy:
     runs-on: [self-hosted, Windows, X64]
-    # TRIGGER: Push to develop/beta/main OR manual dispatch
     if: |
       github.event_name == 'workflow_dispatch' || 
       (github.event_name == 'push' && (github.ref_name == 'develop' || github.ref_name == 'beta' || github.ref_name == 'main'))
 
     steps:
-      - uses: actions/checkout@v4
       - name: Resolve Target Config
         id: target
         shell: powershell
         run: |
+          git fetch --tags
+
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $envName = "${{ github.event.inputs.environment }}"
-            $version = if ("${{ github.event.inputs.version }}") { "${{ github.event.inputs.version }}" } else { "latest" }
+
+            if ("${{ github.event.inputs.version }}") {
+              $version = "${{ github.event.inputs.version }}"
+            } else {
+              $version = git describe --tags --abbrev=0
+            }
           } else {
             $envName = "${{ github.ref_name }}"
-            $version = "latest"
+            $version = git describe --tags --abbrev=0
           }
-          
+
           if ($envName -eq "develop") { $repo = "aesthisia-demo" }
           elseif ($envName -eq "beta") { $repo = "stage-test" }
           else { $repo = "prod-test" }
@@ -148,6 +174,11 @@ jobs:
           "REPO=$repo" >> $env:GITHUB_OUTPUT
           "VER=$version" >> $env:GITHUB_OUTPUT
 
+      # ✅ IMPORTANT CHANGE: checkout TAG
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.target.outputs.VER }}
+
       - name: Docker Build & Push
         shell: powershell
         run: |
@@ -155,6 +186,7 @@ jobs:
           docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
           docker build -t $image .
           docker push $image
+
           "FINAL_IMAGE=$image" >> $env:GITHUB_ENV
 
       - name: Deploy to Fixed Namespace
@@ -162,13 +194,15 @@ jobs:
         run: |
           $envName = "${{ steps.target.outputs.ENV }}"
           $ingressHost = "$envName.127.0.0.1.nip.io"
+
           kubectl create namespace $envName --dry-run=client -o yaml | kubectl apply -f -
-          
+
           (Get-Content deployment.yml) `
             -replace 'NAMESPACE_PLACEHOLDER', "$envName" `
             -replace 'IMAGE_PLACEHOLDER', "$env:FINAL_IMAGE" `
             -replace 'HOST_PLACEHOLDER', "$ingressHost" |
             kubectl apply -n $envName -f -
+
           kubectl set env deployment/sample-app BROWSER=none -n $envName
 
   health-check:
