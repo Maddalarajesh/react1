@@ -56,25 +56,19 @@ jobs:
           git fetch --tags --force
 
           $date = Get-Date -Format "yyyy-MM-dd"
+          $run = "${{ github.run_number }}"
 
-          $todayTags = git tag --list "v*.[0-9][0-9][0-9]-$date"
+          # Get last version safely
+          $lastTag = git tag --list "v*.*.*-*" |
+            ForEach-Object { $_ -replace "-.*","" -replace "^v","" } |
+            Sort-Object { ($_ -split '\.')[0,1,2] } |
+            Select-Object -Last 1
 
-          if ($todayTags) {
-            $lastTag = $todayTags |
-              ForEach-Object { $_ -replace "-$date","" -replace "^v","" } |
-              Sort-Object { ($_ -split '\.')[0,1,2] } |
-              Select-Object -Last 1
-          } else {
-            $lastTag = git tag --list "v*.[0-9][0-9][0-9]-*" |
-              ForEach-Object { $_ -replace "-.*","" -replace "^v","" } |
-              Sort-Object { ($_ -split '\.')[0,1,2] } |
-              Select-Object -Last 1
-
-            if (-not $lastTag) { $lastTag = "1.0.000" }
+          if (-not $lastTag) {
+            $lastTag = "1.0.000"
           }
 
-          $version = $lastTag
-          $parts = $version.Split(".")
+          $parts = $lastTag.Split(".")
           $major = [int]$parts[0]
           $minor = [int]$parts[1]
           $patch = [int]$parts[2]
@@ -92,15 +86,22 @@ jobs:
           }
 
           $patchPadded = "{0:D3}" -f $patch
-          $newTag = "v$major.$minor.$patchPadded-$date"
+
+          # UNIQUE tag (no collision)
+          $newTag = "v$major.$minor.$patchPadded-$date-$run"
 
           echo "version=$newTag" >> $env:GITHUB_OUTPUT
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-          git tag -a $newTag -m "Release $newTag"
-          git push origin $newTag
+          # Prevent duplicate tag error
+          if (git tag --list $newTag) {
+            Write-Host "Tag already exists: $newTag"
+          } else {
+            git tag -a $newTag -m "Release $newTag"
+            git push origin $newTag
+          }
 
 
   preview-deploy:
@@ -178,11 +179,11 @@ jobs:
             if ("${{ github.event.inputs.version }}") {
               $version = "${{ github.event.inputs.version }}"
             } else {
-              $version = git describe --tags --abbrev=0
+              $version = git tag --list "v*" | Sort-Object | Select-Object -Last 1
             }
           } else {
             $envName = "${{ github.ref_name }}"
-            $version = git describe --tags --abbrev=0
+            $version = git tag --list "v*" | Sort-Object | Select-Object -Last 1
           }
 
           if ($envName -eq "develop") { $repo = "aesthisia-demo" }
