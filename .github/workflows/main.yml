@@ -6,7 +6,10 @@ permissions:
 on:
   push:
     branches:
-      - '**'
+      - 'feature/*'
+      - develop
+      - beta
+      - main
   pull_request:
     types: [opened, synchronize, reopened, closed]
   workflow_dispatch:
@@ -25,7 +28,7 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     if: |
       github.event_name == 'push' &&
-      (github.ref_name == 'develop' || startsWith(github.ref_name, 'feature/'))
+      (startsWith(github.ref_name, 'feature/') || github.ref_name == 'develop')
     outputs:
       created_tag: ${{ steps.calc.outputs.version }}
     steps:
@@ -67,112 +70,107 @@ jobs:
 
   preview-deploy:
     runs-on: [self-hosted, Windows, X64]
+    # TRIGGER: Only on PRs coming FROM a sub-branch (contains a slash in the branch name)
     if: |
       github.event_name == 'pull_request' && 
       github.event.action != 'closed' &&
-      github.head_ref != 'develop' &&
-      github.head_ref != 'beta' &&
-      github.head_ref != 'main'
+      contains(github.head_ref, '/') 
 
     steps:
       - uses: actions/checkout@v4
-      - name: Build and Deploy Preview
+      - name: Set dynamic variables
         shell: powershell
         run: |
-          # Variable Resolution
           $branch = "${{ github.head_ref }}"
           $name = $branch.ToLower() -replace '[^a-z0-9]', '-'
-          $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$($name)-${{ github.run_number }}"
-          
-          # Renamed from $host to $ingressHost to avoid PowerShell reserved variable conflict
-          $ingressHost = "$($name).127.0.0.1.nip.io"
-          
-          Write-Host "Logging into Docker..."
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-          
-          Write-Host "Building image: $image"
-          docker build -t $image .
-          docker push $image
+          $namespace = $name
+          $ingressHost = "$name.127.0.0.1.nip.io"
+          $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$name-${{ github.run_number }}"
+          "NAMESPACE=$namespace" >> $env:GITHUB_ENV
+          "HOST=$ingressHost" >> $env:GITHUB_ENV
+          "IMAGE=$image" >> $env:GITHUB_ENV
 
-          Write-Host "Creating Namespace: $name"
-          kubectl create namespace $name --dry-run=client -o yaml | kubectl apply -f -
-          
-          Write-Host "Patching Deployment Manifest with Host: $ingressHost"
+      - name: Docker Login & Build
+        shell: powershell
+        run: |
+          docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
+          docker build -t $env:IMAGE .
+          docker push $env:IMAGE
+
+      - name: Deploy to Dynamic Namespace
+        shell: powershell
+        run: |
+          kubectl create namespace $env:NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
           (Get-Content deployment.yml) `
-            -replace 'NAMESPACE_PLACEHOLDER', $name `
-            -replace 'IMAGE_PLACEHOLDER', $image `
-            -replace 'HOST_PLACEHOLDER', $ingressHost | 
-            Out-File -FilePath patched-deploy.yml -Encoding utf8
-          
-          Write-Host "Applying to Kubernetes..."
-          kubectl apply -f patched-deploy.yml -n $name
-          kubectl set env deployment/sample-app BROWSER=none -n $name
-          kubectl rollout restart deployment/sample-app -n $name
+            -replace 'NAMESPACE_PLACEHOLDER', "$env:NAMESPACE" `
+            -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE" `
+            -replace 'HOST_PLACEHOLDER', "$env:HOST" |
+            kubectl apply -n $env:NAMESPACE -f -
+          # Force set BROWSER=none to prevent PowerShell crash
+          kubectl set env deployment/sample-app BROWSER=none -n $env:NAMESPACE
 
   cleanup:
     runs-on: [self-hosted, Windows, X64]
-    if: |
-      github.event_name == 'pull_request' && 
-      github.event.action == 'closed' && 
-      github.head_ref != 'develop' &&
-      github.head_ref != 'beta' &&
-      github.head_ref != 'main'
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && contains(github.head_ref, '/')
 
     steps:
-      - name: Delete Namespace
+      - name: Delete Dynamic Namespace
         shell: powershell
         run: |
-          $name = "${{ github.event.pull_request.head.ref }}".ToLower() -replace '[^a-z0-9]', '-'
+          $name = "${{ github.head_ref }}".ToLower() -replace '[^a-z0-9]', '-'
           kubectl delete namespace $name --ignore-not-found=true
 
   deploy:
     runs-on: [self-hosted, Windows, X64]
+    # TRIGGER: Push to develop/beta/main OR manual dispatch
     if: |
       github.event_name == 'workflow_dispatch' || 
-      (github.event_name == 'push' && (
-        github.ref_name == 'develop' || 
-        github.ref_name == 'beta' || 
-        github.ref_name == 'main' ||
-        (startsWith(github.ref_name, 'feature/') && !contains(github.ref_name, '/'))
-      ))
+      (github.event_name == 'push' && (github.ref_name == 'develop' || github.ref_name == 'beta' || github.ref_name == 'main'))
 
     steps:
       - uses: actions/checkout@v4
-      - name: Execute Main Deployment
+      - name: Resolve Target Config
+        id: target
         shell: powershell
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $envName = "${{ github.event.inputs.environment }}"
-            $version = "v-${{ github.run_number }}"
+            $version = if ("${{ github.event.inputs.version }}") { "${{ github.event.inputs.version }}" } else { "latest" }
           } else {
             $envName = "${{ github.ref_name }}"
-            $version = "build-${{ github.run_number }}"
+            $version = "latest"
           }
           
-          if ($envName -match "develop|feature") { $repo = "aesthisia-demo" }
+          if ($envName -eq "develop") { $repo = "aesthisia-demo" }
           elseif ($envName -eq "beta") { $repo = "stage-test" }
           else { $repo = "prod-test" }
 
-          $image = "${{ secrets.DOCKER_USERNAME }}/$($repo):$version"
-          $cleanEnv = $envName.ToLower() -replace '[^a-z0-9]', '-'
-          
-          # Renamed variable here as well for consistency
-          $ingressHost = "$($cleanEnv).127.0.0.1.nip.io"
+          "ENV=$envName" >> $env:GITHUB_OUTPUT
+          "REPO=$repo" >> $env:GITHUB_OUTPUT
+          "VER=$version" >> $env:GITHUB_OUTPUT
 
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+      - name: Docker Build & Push
+        shell: powershell
+        run: |
+          $image = "${{ secrets.DOCKER_USERNAME }}/${{ steps.target.outputs.REPO }}:${{ steps.target.outputs.VER }}"
+          docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
           docker build -t $image .
           docker push $image
+          "FINAL_IMAGE=$image" >> $env:GITHUB_ENV
 
+      - name: Deploy to Fixed Namespace
+        shell: powershell
+        run: |
+          $envName = "${{ steps.target.outputs.ENV }}"
+          $ingressHost = "$envName.127.0.0.1.nip.io"
+          kubectl create namespace $envName --dry-run=client -o yaml | kubectl apply -f -
+          
           (Get-Content deployment.yml) `
-            -replace 'NAMESPACE_PLACEHOLDER', $cleanEnv `
-            -replace 'IMAGE_PLACEHOLDER', $image `
-            -replace 'HOST_PLACEHOLDER', $ingressHost |
-            Out-File -FilePath patched-main.yml -Encoding utf8
-
-          kubectl create namespace $cleanEnv --dry-run=client -o yaml | kubectl apply -f -
-          kubectl apply -f patched-main.yml -n $cleanEnv
-          kubectl set env deployment/sample-app BROWSER=none -n $cleanEnv
-          kubectl rollout restart deployment/sample-app -n $cleanEnv
+            -replace 'NAMESPACE_PLACEHOLDER', "$envName" `
+            -replace 'IMAGE_PLACEHOLDER', "$env:FINAL_IMAGE" `
+            -replace 'HOST_PLACEHOLDER', "$ingressHost" |
+            kubectl apply -n $envName -f -
+          kubectl set env deployment/sample-app BROWSER=none -n $envName
 
   health-check:
     runs-on: ubuntu-latest
