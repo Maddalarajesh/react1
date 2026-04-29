@@ -63,7 +63,7 @@ jobs:
           elseif ($commitMsg -like "*feature*") { $minor++; $patch=0 }
           else { $patch++ }
           $patchPadded = "{0:D3}" -f $patch
-          $newTag = "v$major.$minor.$patchPadded-$date-$run"
+          $newTag = "v$major.$minor.$patchPadded-$date"
           echo "version=$newTag" >> $env:GITHUB_OUTPUT
           git config user.name "github-actions"
           git config user.email "actions@github.com"
@@ -169,7 +169,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.target.outputs.VER }}
+            ref: ${{ github.ref_name }}
 
       - name: Docker Build & Push
         shell: powershell
