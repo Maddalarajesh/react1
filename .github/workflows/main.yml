@@ -9,8 +9,10 @@ on:
       - develop
       - beta
       - main
+
   pull_request:
     types: [opened, synchronize, reopened, closed]
+
   workflow_dispatch:
     inputs:
       environment:
@@ -24,11 +26,13 @@ on:
 
 jobs:
 
+# 🔥 TAG CREATION (ONLY DEVELOP)
   versioning:
     runs-on: [self-hosted, Windows, X64]
     if: github.event_name == 'push' && github.ref_name == 'develop'
     outputs:
       created_tag: ${{ steps.calc.outputs.version }}
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,6 +45,7 @@ jobs:
           git fetch --tags --force
 
           $date = Get-Date -Format "yyyy-MM-dd"
+
           $lastTag = git tag --list "v*" |
             Sort-Object {[version]($_ -replace '^v','' -replace '-.*','')} |
             Select-Object -Last 1
@@ -64,6 +69,73 @@ jobs:
           git tag -a $newTag -m "Release $newTag"
           git push origin $newTag
 
+
+# 🧪 PREVIEW DEPLOY
+  preview-deploy:
+    runs-on: [self-hosted, Windows, X64]
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      github.base_ref != 'develop' &&
+      github.base_ref != 'beta' &&
+      github.base_ref != 'main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set dynamic variables
+        shell: powershell
+        run: |
+          $branch = "${{ github.head_ref }}"
+          $namespace = $branch.ToLower() -replace '[^a-z0-9]', '-'
+          $ingressHost = "$namespace.127.0.0.1.nip.io"
+          $image = "${{ secrets.DOCKER_USERNAME }}/aesthisia-demo:$namespace-${{ github.run_number }}"
+
+          "NAMESPACE=$namespace" >> $env:GITHUB_ENV
+          "HOST=$ingressHost" >> $env:GITHUB_ENV
+          "IMAGE=$image" >> $env:GITHUB_ENV
+
+      - name: Docker Build & Push
+        shell: powershell
+        run: |
+          docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
+          docker build -t $env:IMAGE .
+          docker push $env:IMAGE
+
+      - name: Deploy Preview
+        shell: powershell
+        run: |
+          kubectl create namespace $env:NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+
+          (Get-Content deployment.yml) `
+            -replace 'NAMESPACE_PLACEHOLDER', "$env:NAMESPACE" `
+            -replace 'IMAGE_PLACEHOLDER', "$env:IMAGE" `
+            -replace 'HOST_PLACEHOLDER', "$env:HOST" |
+            kubectl apply -n $env:NAMESPACE -f -
+
+
+# 🧹 CLEANUP
+  cleanup:
+    runs-on: [self-hosted, Windows, X64]
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.base_ref != 'develop' &&
+      github.base_ref != 'beta' &&
+      github.base_ref != 'main'
+
+    steps:
+      - name: Delete Namespace
+        shell: powershell
+        run: |
+          $name = "${{ github.head_ref }}".ToLower() -replace '[^a-z0-9]', '-'
+
+          if ($name -notin @("default", "beta", "prod")) {
+            kubectl delete namespace $name --ignore-not-found=true
+          }
+
+
+# 🚀 DEPLOY (FIXED FLOW)
   deploy:
     runs-on: [self-hosted, Windows, X64]
     needs: versioning
@@ -72,13 +144,11 @@ jobs:
       (github.event_name == 'push' && (github.ref_name == 'develop' || github.ref_name == 'beta' || github.ref_name == 'main'))
 
     steps:
-
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Resolve Environment & Tag
+      - name: Resolve Env & Tag
         id: target
         shell: powershell
         run: |
@@ -114,8 +184,8 @@ jobs:
           echo "REPO=$repo" >> $env:GITHUB_OUTPUT
           echo "VER=$version" >> $env:GITHUB_OUTPUT
 
-      # 🔥 Merge TAG into correct branch
-      - name: Sync Tag → Branch
+
+      - name: Merge Tag → Branch
         shell: powershell
         run: |
           git config user.name "github-actions"
@@ -130,11 +200,12 @@ jobs:
           git merge $tag --no-edit
           git push origin $branch
 
-      # 🔥 Checkout updated branch
+
       - name: Checkout Updated Branch
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.target.outputs.ENV }}
+
 
       - name: Docker Build & Push
         shell: powershell
@@ -148,18 +219,19 @@ jobs:
 
           echo "FINAL_IMAGE=$image" >> $env:GITHUB_ENV
 
+
       - name: Deploy to Kubernetes
         shell: powershell
         run: |
           $namespace = "${{ steps.target.outputs.NAMESPACE }}"
-          $host = "$namespace.127.0.0.1.nip.io"
+          $ingressHost = "$namespace.127.0.0.1.nip.io"
 
           kubectl create namespace $namespace --dry-run=client -o yaml | kubectl apply -f -
 
           (Get-Content deployment.yml) `
             -replace 'NAMESPACE_PLACEHOLDER', "$namespace" `
             -replace 'IMAGE_PLACEHOLDER', "$env:FINAL_IMAGE" `
-            -replace 'HOST_PLACEHOLDER', "$host" |
+            -replace 'HOST_PLACEHOLDER', "$ingressHost" |
             kubectl apply -n $namespace -f -
 
           kubectl rollout restart deployment/sample-app -n $namespace
