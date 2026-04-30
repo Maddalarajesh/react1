@@ -169,7 +169,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-            ref: ${{ github.ref_name }}
+            ref: ${{ steps.target.outputs.VER }}
 
       - name: Docker Build & Push
         shell: powershell
