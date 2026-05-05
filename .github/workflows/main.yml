@@ -26,7 +26,7 @@ on:
 
 jobs:
 
-# 🔥 TAG CREATION (ONLY DEVELOP)
+
   versioning:
     runs-on: [self-hosted, Windows, X64]
     if: github.event_name == 'push' && github.ref_name == 'develop'
