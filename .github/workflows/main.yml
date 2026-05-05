@@ -185,7 +185,8 @@ jobs:
           echo "VER=$version" >> $env:GITHUB_OUTPUT
 
 
-      - name: Merge Tag → Branch
+      # ✅ FIXED: Move branch to selected tag
+      - name: Sync Branch to Tag
         shell: powershell
         run: |
           git config user.name "github-actions"
@@ -194,11 +195,11 @@ jobs:
           $branch = "${{ steps.target.outputs.ENV }}"
           $tag = "${{ steps.target.outputs.VER }}"
 
-          git checkout $branch
-          git pull origin $branch
+          git fetch origin --tags
 
-          git merge $tag --no-edit
-          git push origin $branch
+          git checkout $branch
+          git reset --hard $tag
+          git push origin $branch --force
 
 
       - name: Checkout Updated Branch
